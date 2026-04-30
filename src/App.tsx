@@ -470,119 +470,123 @@ function App() {
         )}
       </section>
 
-      <section className="card">
-        <div className="card__header">
-          <h2>二维码登录</h2>
-          <div className="card__actions">
-            <button className="button" onClick={onStartQrLogin} disabled={isBusy}>
-              {startingQr ? '启动中...' : '开始二维码登录'}
-            </button>
-            <button className="button button--ghost" onClick={onPollQrStatus} disabled={isBusy}>
-              {pollingQr ? '查询中...' : '查询扫码状态'}
-            </button>
-          </div>
-        </div>
+      {!session?.loggedIn ? (
+        <>
+          <section className="card">
+            <div className="card__header">
+              <h2>二维码登录</h2>
+              <div className="card__actions">
+                <button className="button" onClick={onStartQrLogin} disabled={isBusy}>
+                  {startingQr ? '启动中...' : '开始二维码登录'}
+                </button>
+                <button className="button button--ghost" onClick={onPollQrStatus} disabled={isBusy}>
+                  {pollingQr ? '查询中...' : '查询扫码状态'}
+                </button>
+              </div>
+            </div>
 
-        <div className="qr-layout">
-          <article className="qr-visual" aria-live="polite">
-            {qrCanRender ? (
-              <>
-                <div className="qr-visual__badge">可扫码二维码</div>
-                <div className="qr-code-frame">
-                  <QRCodeSVG
-                    value={qrValue}
-                    size={176}
-                    marginSize={3}
-                    bgColor="transparent"
-                    fgColor="currentColor"
-                    className="qr-code-svg"
-                  />
+            <div className="qr-layout">
+              <article className="qr-visual" aria-live="polite">
+                {qrCanRender ? (
+                  <>
+                    <div className="qr-visual__badge">可扫码二维码</div>
+                    <div className="qr-code-frame">
+                      <QRCodeSVG
+                        value={qrValue}
+                        size={176}
+                        marginSize={3}
+                        bgColor="transparent"
+                        fgColor="currentColor"
+                        className="qr-code-svg"
+                      />
+                    </div>
+                    <p className="qr-visual__hint">
+                      这是根据当前后端真实返回的链接/令牌生成的二维码。你现在至少可以扫码看到对应内容，但这不代表后端已经打通真实夸克扫码登录回调。
+                    </p>
+                    {qrUrl ? (
+                      <a
+                        className="qr-visual__link"
+                        href={qrUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={qrUrl}
+                      >
+                        在新窗口打开扫码链接
+                      </a>
+                    ) : null}
+                    <div className="qr-visual__url" title={qrValue}>
+                      {qrValue}
+                    </div>
+                  </>
+                ) : hasQrPayload ? (
+                  <>
+                    <div className="qr-visual__badge">已收到登录上下文</div>
+                    <p className="qr-visual__hint">已拿到请求标识或令牌，但当前数据还不足以生成二维码。请继续点击“查询扫码状态”确认登录进度。</p>
+                  </>
+                ) : (
+                  <>
+                    <div className="qr-visual__placeholder" aria-hidden="true">
+                      <span />
+                      <span />
+                      <span />
+                    </div>
+                    <p className="qr-visual__hint">点击“开始二维码登录”后，若后端仅返回链接或令牌，这里会展示真实返回内容与限制说明。</p>
+                  </>
+                )}
+              </article>
+
+              <dl className="kv-grid kv-grid--qr">
+                <div>
+                  <dt>请求 ID</dt>
+                  <dd>{qrRequestId ?? '-'}</dd>
                 </div>
-                <p className="qr-visual__hint">
-                  这是根据当前后端真实返回的链接/令牌生成的二维码。你现在至少可以扫码看到对应内容，但这不代表后端已经打通真实夸克扫码登录回调。
-                </p>
-                {qrUrl ? (
-                  <a
-                    className="qr-visual__link"
-                    href={qrUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    title={qrUrl}
-                  >
-                    在新窗口打开扫码链接
-                  </a>
-                ) : null}
-                <div className="qr-visual__url" title={qrValue}>
-                  {qrValue}
+                <div>
+                  <dt>二维码状态</dt>
+                  <dd>{qrCurrentStatus ?? '-'}</dd>
                 </div>
-              </>
-            ) : hasQrPayload ? (
-              <>
-                <div className="qr-visual__badge">已收到登录上下文</div>
-                <p className="qr-visual__hint">已拿到请求标识或令牌，但当前数据还不足以生成二维码。请继续点击“查询扫码状态”确认登录进度。</p>
-              </>
-            ) : (
-              <>
-                <div className="qr-visual__placeholder" aria-hidden="true">
-                  <span />
-                  <span />
-                  <span />
+                <div>
+                  <dt>二维码链接</dt>
+                  <dd className="truncate">{qrUrl ?? '-'}</dd>
                 </div>
-                <p className="qr-visual__hint">点击“开始二维码登录”后，若后端仅返回链接或令牌，这里会展示真实返回内容与限制说明。</p>
-              </>
-            )}
-          </article>
+                <div>
+                  <dt>二维码令牌</dt>
+                  <dd className="truncate">{qrToken ?? '-'}</dd>
+                </div>
+                <div>
+                  <dt>失效时间</dt>
+                  <dd>{qrExpiresAt ?? '-'}</dd>
+                </div>
+                <div>
+                  <dt>最近错误</dt>
+                  <dd>{qrError ?? '-'}</dd>
+                </div>
+              </dl>
+            </div>
 
-          <dl className="kv-grid kv-grid--qr">
-            <div>
-              <dt>请求 ID</dt>
-              <dd>{qrRequestId ?? '-'}</dd>
-            </div>
-            <div>
-              <dt>二维码状态</dt>
-              <dd>{qrCurrentStatus ?? '-'}</dd>
-            </div>
-            <div>
-              <dt>二维码链接</dt>
-              <dd className="truncate">{qrUrl ?? '-'}</dd>
-            </div>
-            <div>
-              <dt>二维码令牌</dt>
-              <dd className="truncate">{qrToken ?? '-'}</dd>
-            </div>
-            <div>
-              <dt>失效时间</dt>
-              <dd>{qrExpiresAt ?? '-'}</dd>
-            </div>
-            <div>
-              <dt>最近错误</dt>
-              <dd>{qrError ?? '-'}</dd>
-            </div>
-          </dl>
-        </div>
+            <p className="card__footnote">说明：页面现在会把后端返回的链接或令牌渲染成可扫码二维码，但真实夸克扫码成功回调仍未接通；如果扫码后没有自动登录，这不是你的操作问题，而是后端链路还在开发中。</p>
+          </section>
 
-        <p className="card__footnote">说明：页面现在会把后端返回的链接或令牌渲染成可扫码二维码，但真实夸克扫码成功回调仍未接通；如果扫码后没有自动登录，这不是你的操作问题，而是后端链路还在开发中。</p>
-      </section>
-
-      <section className="card">
-        <div className="card__header">
-          <h2>手动 Cookie 兜底</h2>
-          <button className="button" onClick={onSaveCookie} disabled={isBusy}>
-            {savingCookie ? '保存中...' : '保存 Cookie'}
-          </button>
-        </div>
-        <label className="field" htmlFor="cookie-input">
-          Cookie 字符串
-        </label>
-        <textarea
-          id="cookie-input"
-          value={cookieInput}
-          onChange={(event) => setCookieInput(event.target.value)}
-          rows={4}
-          placeholder="粘贴完整 Cookie Header 值"
-          disabled={isBusy}
-        />
-      </section>
+          <section className="card">
+            <div className="card__header">
+              <h2>手动 Cookie 兜底</h2>
+              <button className="button" onClick={onSaveCookie} disabled={isBusy}>
+                {savingCookie ? '保存中...' : '保存 Cookie'}
+              </button>
+            </div>
+            <label className="field" htmlFor="cookie-input">
+              Cookie 字符串
+            </label>
+            <textarea
+              id="cookie-input"
+              value={cookieInput}
+              onChange={(event) => setCookieInput(event.target.value)}
+              rows={4}
+              placeholder="粘贴完整 Cookie Header 值"
+              disabled={isBusy}
+            />
+          </section>
+        </>
+      ) : null}
 
       <section className="card card--danger">
         <div className="card__header">

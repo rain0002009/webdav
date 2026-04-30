@@ -1,4 +1,4 @@
-import { QuarkApiError, type QuarkDownloadLink, type QuarkEntry } from './types'
+import { QuarkApiError, type QuarkDownloadLink, type QuarkEntry, type QuarkUploadTicket } from './types'
 
 const QUARK_API_BASE = 'https://drive-pc.quark.cn'
 const QUARK_LOGIN_API_BASE = 'https://uop.quark.cn'
@@ -52,6 +52,70 @@ type QuarkRawEntry = {
   updated_at?: string
   obj_category?: string
   format_type?: string
+}
+
+type QuarkCreateDirectoryEnvelope = {
+  code?: number
+  status?: number
+  message?: string
+  data?: {
+    finish?: boolean
+    fid?: string
+  }
+}
+
+type QuarkDeleteEnvelope = {
+  code?: number
+  status?: number
+  message?: string
+}
+
+type QuarkUploadPreEnvelope = {
+  code?: number
+  status?: number
+  message?: string
+  data?: {
+    finish?: boolean
+    task_id?: string
+    upload_id?: string
+    auth_info?: string
+    upload_url?: string
+    obj_key?: string
+    fid?: string
+    bucket?: string
+    format_type?: string
+    callback?: {
+      callbackUrl?: string
+      callbackBody?: string
+    }
+  }
+  metadata?: {
+    part_size?: number
+  }
+}
+
+type QuarkUploadHashEnvelope = {
+  code?: number
+  status?: number
+  message?: string
+  data?: {
+    finish?: boolean
+  }
+}
+
+type QuarkAuthEnvelope = {
+  code?: number
+  status?: number
+  message?: string
+  data?: {
+    auth_key?: string
+  }
+}
+
+type QuarkFinishEnvelope = {
+  code?: number
+  status?: number
+  message?: string
 }
 
 type QuarkQrTokenEnvelope = {
@@ -283,6 +347,372 @@ export class QuarkClient {
     return response.url
   }
 
+  async createDirectory(parentFid: string, name: string): Promise<void> {
+    const url = new URL('/1/clouddrive/file', QUARK_API_BASE)
+    for (const [key, value] of Object.entries(DEFAULT_QUERY)) {
+      url.searchParams.set(key, value)
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.createHeaders(),
+      body: JSON.stringify({
+        pdir_fid: parentFid,
+        file_name: name,
+        dir_path: '',
+        dir_init_lock: false,
+      }),
+    })
+    this.captureCookieUpdates(response)
+
+    const payload = (await response.json().catch(() => null)) as QuarkCreateDirectoryEnvelope | null
+    if (!response.ok || payload?.status !== 200) {
+      throw new QuarkApiError(this.getErrorMessage(payload, response.status), response.status)
+    }
+  }
+
+  async deleteFile(fileId: string): Promise<void> {
+    const url = new URL('/1/clouddrive/file/delete', QUARK_API_BASE)
+    for (const [key, value] of Object.entries(DEFAULT_QUERY)) {
+      url.searchParams.set(key, value)
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.createHeaders(),
+      body: JSON.stringify({
+        action_type: 2,
+        exclude_fids: [],
+        filelist: [fileId],
+      }),
+    })
+    this.captureCookieUpdates(response)
+
+    const payload = (await response.json().catch(() => null)) as QuarkDeleteEnvelope | null
+    if (!response.ok || payload?.status !== 200) {
+      throw new QuarkApiError(this.getErrorMessage(payload, response.status), response.status)
+    }
+  }
+
+  async renameFile(fileId: string, name: string): Promise<void> {
+    const url = new URL('/1/clouddrive/file/rename', QUARK_API_BASE)
+    for (const [key, value] of Object.entries(DEFAULT_QUERY)) {
+      url.searchParams.set(key, value)
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.createHeaders(),
+      body: JSON.stringify({
+        fid: fileId,
+        file_name: name,
+      }),
+    })
+    this.captureCookieUpdates(response)
+
+    const payload = (await response.json().catch(() => null)) as QuarkDeleteEnvelope | null
+    if (!response.ok || payload?.status !== 200) {
+      throw new QuarkApiError(this.getErrorMessage(payload, response.status), response.status)
+    }
+  }
+
+  async moveFile(fileId: string, targetParentFid: string): Promise<void> {
+    const url = new URL('/1/clouddrive/file/move', QUARK_API_BASE)
+    for (const [key, value] of Object.entries(DEFAULT_QUERY)) {
+      url.searchParams.set(key, value)
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.createHeaders(),
+      body: JSON.stringify({
+        filelist: [fileId],
+        to_pdir_fid: targetParentFid,
+      }),
+    })
+    this.captureCookieUpdates(response)
+
+    const payload = (await response.json().catch(() => null)) as QuarkDeleteEnvelope | null
+    if (!response.ok || payload?.status !== 200) {
+      throw new QuarkApiError(this.getErrorMessage(payload, response.status), response.status)
+    }
+  }
+
+  async prepareUpload(fileName: string, size: number, parentFid: string, mimeType: string): Promise<QuarkUploadTicket> {
+    const url = new URL('/1/clouddrive/file/upload/pre', QUARK_API_BASE)
+    for (const [key, value] of Object.entries(DEFAULT_QUERY)) {
+      url.searchParams.set(key, value)
+    }
+
+    const now = Date.now()
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.createHeaders(),
+      body: JSON.stringify({
+        file_name: fileName,
+        size,
+        pdir_fid: parentFid,
+        format_type: mimeType,
+        ccp_hash_update: true,
+        l_created_at: now,
+        l_updated_at: now,
+        parallel_upload: false,
+        dir_name: '',
+      }),
+    })
+    this.captureCookieUpdates(response)
+
+    const payload = (await response.json().catch(() => null)) as QuarkUploadPreEnvelope | null
+    if (!response.ok || payload?.status !== 200) {
+      throw new QuarkApiError(this.getErrorMessage(payload, response.status), response.status)
+    }
+
+    const data = payload?.data
+    if (
+      !data?.task_id ||
+      !data?.auth_info ||
+      !data?.upload_url ||
+      !data?.obj_key ||
+      !data?.bucket ||
+      !data?.fid ||
+      !payload?.metadata?.part_size
+    ) {
+      throw new QuarkApiError('Quark upload preflight response was incomplete.', 502)
+    }
+
+    return {
+      taskId: data.task_id,
+      uploadId: data.upload_id ?? '',
+      uploadUrl: stripProtocol(data.upload_url),
+      bucket: data.bucket,
+      objectKey: data.obj_key,
+      authInfo: data.auth_info,
+      callback: {
+        callbackUrl: data.callback?.callbackUrl ?? '',
+        callbackBody: data.callback?.callbackBody ?? '',
+      },
+      partSize: payload.metadata.part_size,
+      mimeType: data.format_type || mimeType,
+      fileId: data.fid,
+      alreadyFinished: data.finish === true,
+    }
+  }
+
+  async updateUploadHash(md5: string, sha1: string, taskId: string): Promise<boolean> {
+    const url = new URL('/1/clouddrive/file/update/hash', QUARK_API_BASE)
+    for (const [key, value] of Object.entries(DEFAULT_QUERY)) {
+      url.searchParams.set(key, value)
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.createHeaders(),
+      body: JSON.stringify({
+        md5,
+        sha1,
+        task_id: taskId,
+      }),
+    })
+    this.captureCookieUpdates(response)
+
+    const payload = (await response.json().catch(() => null)) as QuarkUploadHashEnvelope | null
+    if (!response.ok || payload?.status !== 200) {
+      throw new QuarkApiError(this.getErrorMessage(payload, response.status), response.status)
+    }
+
+    return payload?.data?.finish === true
+  }
+
+  async authenticateUpload(authInfo: string, authMeta: string, taskId: string): Promise<string> {
+    const url = new URL('/1/clouddrive/file/upload/auth', QUARK_API_BASE)
+    for (const [key, value] of Object.entries(DEFAULT_QUERY)) {
+      url.searchParams.set(key, value)
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.createHeaders(),
+      body: JSON.stringify({
+        auth_info: authInfo,
+        auth_meta: authMeta,
+        task_id: taskId,
+      }),
+    })
+    this.captureCookieUpdates(response)
+
+    const payload = (await response.json().catch(() => null)) as QuarkAuthEnvelope | null
+    if (!response.ok || payload?.status !== 200 || !payload?.data?.auth_key) {
+      throw new QuarkApiError(this.getErrorMessage(payload, response.status), response.status)
+    }
+
+    return payload.data.auth_key
+  }
+
+  async uploadSinglePart(args: {
+    authKey: string
+    mimeType: string
+    utcTime: string
+    bucket: string
+    uploadUrl: string
+    objectKey: string
+    uploadId: string
+    bytes: Uint8Array
+  }): Promise<string> {
+    const url = `https://${args.bucket}.${args.uploadUrl}//${args.objectKey}?partNumber=1&uploadId=${args.uploadId}`
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        Authorization: args.authKey,
+        'Content-Type': args.mimeType,
+        'x-oss-date': args.utcTime,
+        'x-oss-user-agent': 'aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit',
+        Referer: 'https://pan.quark.cn/',
+      },
+      body: args.bytes,
+    })
+
+    if (!response.ok) {
+      throw new QuarkApiError(`Quark upload part failed (${response.status}).`, response.status)
+    }
+
+    const etag = response.headers.get('etag')
+    if (!etag) {
+      throw new QuarkApiError('Quark upload part did not return an ETag.', 502)
+    }
+
+    return etag
+  }
+
+  async commitSinglePartUpload(args: {
+    etag: string
+    callback: { callbackUrl: string; callbackBody: string }
+    bucket: string
+    objectKey: string
+    uploadId: string
+    authInfo: string
+    taskId: string
+    uploadUrl: string
+  }): Promise<void> {
+    const xmlBody = `<?xml version="1.0" encoding="UTF-8"?>\n<CompleteMultipartUpload>\n<Part>\n<PartNumber>1</PartNumber>\n<ETag>${args.etag}</ETag>\n</Part>\n</CompleteMultipartUpload>`
+    const contentMd5 = await digestToBase64('MD5', new TextEncoder().encode(xmlBody))
+    const callbackBase64 = toBase64(JSON.stringify(args.callback))
+    const time = new Date().toUTCString()
+    const authMeta = [
+      'POST',
+      contentMd5,
+      'application/xml',
+      time,
+      `x-oss-callback:${callbackBase64}`,
+      `x-oss-date:${time}`,
+      'x-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit',
+      `/${args.bucket}/${args.objectKey}?uploadId=${args.uploadId}`,
+    ].join('\n')
+    const authKey = await this.authenticateUpload(args.authInfo, authMeta, args.taskId)
+
+    const commitUrl = `https://${args.bucket}.${args.uploadUrl}//${args.objectKey}?uploadId=${args.uploadId}`
+    const response = await fetch(commitUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: authKey,
+        'Content-MD5': contentMd5,
+        'Content-Type': 'application/xml',
+        'x-oss-callback': callbackBase64,
+        'x-oss-date': time,
+        'x-oss-user-agent': 'aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit',
+        Referer: 'https://pan.quark.cn/',
+      },
+      body: xmlBody,
+    })
+
+    if (!response.ok) {
+      throw new QuarkApiError(`Quark upload commit failed (${response.status}).`, response.status)
+    }
+  }
+
+  async finishUpload(objectKey: string, taskId: string): Promise<void> {
+    const url = new URL('/1/clouddrive/file/upload/finish', QUARK_API_BASE)
+    for (const [key, value] of Object.entries(DEFAULT_QUERY)) {
+      url.searchParams.set(key, value)
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: this.createHeaders(),
+      body: JSON.stringify({
+        obj_key: objectKey,
+        task_id: taskId,
+      }),
+    })
+    this.captureCookieUpdates(response)
+
+    const payload = (await response.json().catch(() => null)) as QuarkFinishEnvelope | null
+    if (!response.ok || payload?.status !== 200) {
+      throw new QuarkApiError(this.getErrorMessage(payload, response.status), response.status)
+    }
+  }
+
+  async uploadSmallFile(args: {
+    fileName: string
+    parentFid: string
+    bytes: Uint8Array
+    mimeType: string
+  }): Promise<{ created: boolean }> {
+    const ticket = await this.prepareUpload(args.fileName, args.bytes.byteLength, args.parentFid, args.mimeType)
+    if (ticket.alreadyFinished) {
+      return { created: true }
+    }
+
+    const md5 = await digestToHex('MD5', args.bytes)
+    const sha1 = await digestToHex('SHA-1', args.bytes)
+    const finishedByHash = await this.updateUploadHash(md5, sha1, ticket.taskId)
+    if (finishedByHash) {
+      return { created: true }
+    }
+
+    if (!ticket.uploadId) {
+      throw new QuarkApiError('Quark upload preflight did not return an uploadId for multipart upload.', 502)
+    }
+
+    if (args.bytes.byteLength > ticket.partSize) {
+      throw new QuarkApiError(
+        `Current Worker upload MVP only supports files up to ${ticket.partSize} bytes.`,
+        413,
+      )
+    }
+
+    const utcTime = new Date().toUTCString()
+    const authMeta = buildUploadPartAuthMeta({
+      mimeType: ticket.mimeType,
+      utcTime,
+      bucket: ticket.bucket,
+      objectKey: ticket.objectKey,
+      uploadId: ticket.uploadId,
+    })
+    const authKey = await this.authenticateUpload(ticket.authInfo, authMeta, ticket.taskId)
+    const etag = await this.uploadSinglePart({
+      authKey,
+      mimeType: ticket.mimeType,
+      utcTime,
+      bucket: ticket.bucket,
+      uploadUrl: ticket.uploadUrl,
+      objectKey: ticket.objectKey,
+      uploadId: ticket.uploadId,
+      bytes: args.bytes,
+    })
+    await this.commitSinglePartUpload({
+      etag,
+      callback: ticket.callback,
+      bucket: ticket.bucket,
+      objectKey: ticket.objectKey,
+      uploadId: ticket.uploadId,
+      authInfo: ticket.authInfo,
+      taskId: ticket.taskId,
+      uploadUrl: ticket.uploadUrl,
+    })
+    await this.finishUpload(ticket.objectKey, ticket.taskId)
+    return { created: true }
+  }
+
   private createHeaders(): HeadersInit {
     return {
       ...DEFAULT_HEADERS,
@@ -290,8 +720,18 @@ export class QuarkClient {
     }
   }
 
-  private getErrorMessage(payload: { error?: string; message?: string } | null, status: number): string {
-    return payload?.error ?? payload?.message ?? `Quark upstream request failed (${status}).`
+  private getErrorMessage(
+    payload: { error?: string; message?: string; status?: number; code?: number } | null,
+    status: number,
+  ): string {
+    const parts = [
+      payload?.error ?? payload?.message ?? `Quark upstream request failed (${status}).`,
+      payload?.status !== undefined ? `upstreamStatus=${payload.status}` : '',
+      payload?.code !== undefined ? `upstreamCode=${payload.code}` : '',
+      `httpStatus=${status}`,
+    ].filter(Boolean)
+
+    return parts.join(' | ')
   }
 
   private captureCookieUpdates(response: Response): void {
@@ -347,6 +787,55 @@ function parseDownloadUrlExpiresAt(downloadUrl: string, fallbackEpochSeconds?: n
   }
 
   return undefined
+}
+
+async function digestToHex(algorithm: 'MD5' | 'SHA-1', data: BufferSource): Promise<string> {
+  const digest = await crypto.subtle.digest(algorithm, data)
+  return bytesToHex(new Uint8Array(digest))
+}
+
+async function digestToBase64(algorithm: 'MD5' | 'SHA-1', data: BufferSource): Promise<string> {
+  const digest = await crypto.subtle.digest(algorithm, data)
+  return uint8ArrayToBase64(new Uint8Array(digest))
+}
+
+function bytesToHex(bytes: Uint8Array): string {
+  return [...bytes].map((value) => value.toString(16).padStart(2, '0')).join('')
+}
+
+function toBase64(value: string): string {
+  return uint8ArrayToBase64(new TextEncoder().encode(value))
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (const value of bytes) {
+    binary += String.fromCharCode(value)
+  }
+
+  return btoa(binary)
+}
+
+function stripProtocol(url: string): string {
+  return url.replace(/^https?:\/\//, '')
+}
+
+function buildUploadPartAuthMeta(args: {
+  mimeType: string
+  utcTime: string
+  bucket: string
+  objectKey: string
+  uploadId: string
+}): string {
+  return [
+    'PUT',
+    '',
+    args.mimeType,
+    args.utcTime,
+    `x-oss-date:${args.utcTime}`,
+    'x-oss-user-agent:aliyun-sdk-js/6.6.1 Chrome 98.0.4758.80 on Windows 10 64-bit',
+    `/${args.bucket}/${args.objectKey}?partNumber=1&uploadId=${args.uploadId}`,
+  ].join('\n')
 }
 
 function getResponseSetCookies(response: Response): string[] {

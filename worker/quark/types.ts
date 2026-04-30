@@ -23,6 +23,23 @@ export type QuarkDownloadLink = {
   expiresAt?: number
 }
 
+export type QuarkUploadTicket = {
+  taskId: string
+  uploadId: string
+  uploadUrl: string
+  bucket: string
+  objectKey: string
+  authInfo: string
+  callback: {
+    callbackUrl: string
+    callbackBody: string
+  }
+  partSize: number
+  mimeType: string
+  fileId: string
+  alreadyFinished: boolean
+}
+
 export class QuarkApiError extends Error {
   readonly status: number
   readonly code?: number

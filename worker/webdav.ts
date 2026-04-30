@@ -15,86 +15,134 @@ const DAV_HEADERS = {
   'Cache-Control': 'no-store',
 } satisfies HeadersInit
 
+const READ_ONLY_DAV_METHODS = new Set([
+  'LOCK',
+  'UNLOCK',
+  'PROPPATCH',
+  'COPY',
+  'PATCH',
+])
+
 export async function handleWebDavRequest(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url)
-  const auth = parseBasicAuth(request)
-  if (!auth.ok) {
-    return new Response(auth.message, {
-      status: 401,
-      headers: {
-        ...DAV_HEADERS,
-        'content-type': 'text/plain; charset=utf-8',
-        'www-authenticate': 'Basic realm="Quark WebDAV"',
-      },
-    })
-  }
-
-  const credentials = await getWebDavCredentialsByUsername(auth.username, env)
-  if (!credentials || !constantTimeEquals(auth.password, credentials.password)) {
-    return new Response('Invalid WebDAV username or password.', {
-      status: 401,
-      headers: {
-        ...DAV_HEADERS,
-        'content-type': 'text/plain; charset=utf-8',
-        'www-authenticate': 'Basic realm="Quark WebDAV"',
-      },
-    })
-  }
-
-  const persistedSession = await getPersistedQuarkSessionByAccountKey(credentials.accountKey, env)
-  if (!persistedSession?.cookie) {
-    return new Response('No bound Quark session is available for this WebDAV account.', {
-      status: 401,
-      headers: {
-        ...DAV_HEADERS,
-        'content-type': 'text/plain; charset=utf-8',
-        'www-authenticate': 'Basic realm="Quark WebDAV"',
-      },
-    })
-  }
-
-  let accountCookie = persistedSession.cookie
-
-  const adapter = new QuarkAdapter(accountCookie, async (cookieUpdates) => {
-    const mergedCookie = mergeCookieString(accountCookie, cookieUpdates)
-    if (!mergedCookie) {
-      return
+  try {
+    const url = new URL(request.url)
+    const auth = parseBasicAuth(request)
+    if (!auth.ok) {
+      return new Response(auth.message, {
+        status: 401,
+        headers: {
+          ...DAV_HEADERS,
+          'content-type': 'text/plain; charset=utf-8',
+          'www-authenticate': 'Basic realm="Quark WebDAV"',
+        },
+      })
     }
 
-    accountCookie = mergedCookie
-    await persistQuarkSessionForAccount(
-      credentials.accountKey,
-      mergedCookie,
-      {
-        user: persistedSession.user,
-        expiresAt: persistedSession.expiresAt,
-      },
-      env,
-    )
-  })
+    const credentials = await getWebDavCredentialsByUsername(auth.username, env)
+    if (!credentials || !constantTimeEquals(auth.password, credentials.password)) {
+      return new Response('Invalid WebDAV username or password.', {
+        status: 401,
+        headers: {
+          ...DAV_HEADERS,
+          'content-type': 'text/plain; charset=utf-8',
+          'www-authenticate': 'Basic realm="Quark WebDAV"',
+        },
+      })
+    }
 
-  if (request.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: DAV_HEADERS,
+    const persistedSession = await getPersistedQuarkSessionByAccountKey(credentials.accountKey, env)
+    if (!persistedSession?.cookie) {
+      return new Response('No bound Quark session is available for this WebDAV account.', {
+        status: 401,
+        headers: {
+          ...DAV_HEADERS,
+          'content-type': 'text/plain; charset=utf-8',
+          'www-authenticate': 'Basic realm="Quark WebDAV"',
+        },
+      })
+    }
+
+    let accountCookie = persistedSession.cookie
+
+    const adapter = new QuarkAdapter(accountCookie, async (cookieUpdates) => {
+      const mergedCookie = mergeCookieString(accountCookie, cookieUpdates)
+      if (!mergedCookie) {
+        return
+      }
+
+      accountCookie = mergedCookie
+      await persistQuarkSessionForAccount(
+        credentials.accountKey,
+        mergedCookie,
+        {
+          user: persistedSession.user,
+          expiresAt: persistedSession.expiresAt,
+        },
+        env,
+      )
     })
-  }
 
-  if (request.method === 'PROPFIND') {
-    return handlePropfind(adapter, url, request)
-  }
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: DAV_HEADERS,
+      })
+    }
 
-  if (request.method === 'GET' || request.method === 'HEAD') {
-    return handleGet(adapter, url, request, persistedSession.user)
-  }
+    if (request.method === 'PROPFIND') {
+      return handlePropfind(adapter, url, request)
+    }
 
-  return new Response('WebDAV write operations are not implemented in this MVP.', {
-    status: 501,
-    headers: {
-      ...DAV_HEADERS,
-      'content-type': 'text/plain; charset=utf-8',
-    },
-  })
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      return handleGet(adapter, url, request, accountCookie, persistedSession.user)
+    }
+
+    if (request.method === 'MKCOL') {
+      return handleMkcol(adapter, url)
+    }
+
+    if (request.method === 'PUT') {
+      return handlePut(adapter, url, request)
+    }
+
+    if (request.method === 'DELETE') {
+      return handleDelete(adapter, url)
+    }
+
+    if (request.method === 'MOVE') {
+      return handleMove(adapter, request, url)
+    }
+
+    if (READ_ONLY_DAV_METHODS.has(request.method)) {
+      return new Response(`WebDAV method ${request.method} is disabled because this server is currently read-only.`, {
+        status: 405,
+        headers: {
+          ...DAV_HEADERS,
+          'content-type': 'text/plain; charset=utf-8',
+        },
+      })
+    }
+
+    return new Response('WebDAV write operations are not implemented in this MVP.', {
+      status: 405,
+      headers: {
+        ...DAV_HEADERS,
+        'content-type': 'text/plain; charset=utf-8',
+      },
+    })
+  } catch (error) {
+    if (error instanceof URIError) {
+      return new Response('Malformed WebDAV request path.', {
+        status: 400,
+        headers: {
+          ...DAV_HEADERS,
+          'content-type': 'text/plain; charset=utf-8',
+        },
+      })
+    }
+
+    throw error
+  }
 }
 
 async function handlePropfind(adapter: QuarkAdapter, url: URL, request: Request): Promise<Response> {
@@ -141,6 +189,7 @@ async function handleGet(
   adapter: QuarkAdapter,
   url: URL,
   request: Request,
+  accountCookie: string,
   user?: string,
 ): Promise<Response> {
   const pathname = normalizeDavPath(url.pathname)
@@ -190,7 +239,7 @@ async function handleGet(
     let upstreamResponse = await fetch(downloadUrl, {
       method: 'GET',
       redirect: 'follow',
-      headers: createRangeHeaders(request),
+      headers: createDownloadHeaders(accountCookie, request),
     })
 
     if (isExpiredDownloadResponse(upstreamResponse.status)) {
@@ -198,7 +247,7 @@ async function handleGet(
       upstreamResponse = await fetch(refreshed.downloadUrl, {
         method: 'GET',
         redirect: 'follow',
-        headers: createRangeHeaders(request),
+        headers: createDownloadHeaders(accountCookie, request),
       })
     }
 
@@ -232,6 +281,90 @@ async function handleGet(
     })
   } catch (error) {
     return handleQuarkError(error)
+  }
+}
+
+async function handleMkcol(adapter: QuarkAdapter, url: URL): Promise<Response> {
+  const pathname = normalizeDavPath(url.pathname)
+
+  try {
+    await adapter.makeCollection(pathname)
+    return new Response(null, {
+      status: 201,
+      headers: DAV_HEADERS,
+    })
+  } catch (error) {
+    return handleWriteError(error)
+  }
+}
+
+async function handlePut(adapter: QuarkAdapter, url: URL, request: Request): Promise<Response> {
+  const pathname = normalizeDavPath(url.pathname)
+
+  try {
+    const contentLength = Number(request.headers.get('content-length') ?? '0')
+    if (contentLength > 10 * 1024 * 1024) {
+      return new Response('Current Worker upload MVP supports files up to 10 MB.', {
+        status: 413,
+        headers: {
+          ...DAV_HEADERS,
+          'content-type': 'text/plain; charset=utf-8',
+        },
+      })
+    }
+
+    const bytes = new Uint8Array(await request.arrayBuffer())
+    const result = await adapter.putFile(
+      pathname,
+      bytes,
+      request.headers.get('content-type') ?? 'application/octet-stream',
+    )
+    return new Response(null, {
+      status: result.created ? 201 : 204,
+      headers: DAV_HEADERS,
+    })
+  } catch (error) {
+    return handleWriteError(error)
+  }
+}
+
+async function handleDelete(adapter: QuarkAdapter, url: URL): Promise<Response> {
+  const pathname = normalizeDavPath(url.pathname)
+
+  try {
+    await adapter.deletePath(pathname)
+    return new Response(null, {
+      status: 204,
+      headers: DAV_HEADERS,
+    })
+  } catch (error) {
+    return handleWriteError(error)
+  }
+}
+
+async function handleMove(adapter: QuarkAdapter, request: Request, url: URL): Promise<Response> {
+  const sourcePath = normalizeDavPath(url.pathname)
+  const destinationHeader = request.headers.get('destination')
+  if (!destinationHeader) {
+    return new Response('MOVE request requires a Destination header.', {
+      status: 400,
+      headers: {
+        ...DAV_HEADERS,
+        'content-type': 'text/plain; charset=utf-8',
+      },
+    })
+  }
+
+  try {
+    const destinationUrl = new URL(destinationHeader, url.origin)
+    const destinationPath = normalizeDavPath(destinationUrl.pathname)
+    await adapter.movePath(sourcePath, destinationPath)
+    return new Response(null, {
+      status: 201,
+      headers: DAV_HEADERS,
+    })
+  } catch (error) {
+    return handleWriteError(error)
   }
 }
 
@@ -321,6 +454,70 @@ function handleQuarkError(error: unknown): Response {
   })
 }
 
+function handleWriteError(error: unknown): Response {
+  if (error instanceof QuarkApiError) {
+    if (error.code === 23008) {
+      return new Response(error.message, {
+        status: 409,
+        headers: {
+          ...DAV_HEADERS,
+          'content-type': 'text/plain; charset=utf-8',
+        },
+      })
+    }
+
+    const status = error.status === 413 ? 413 : 502
+    return new Response(error.message, {
+      status,
+      headers: {
+        ...DAV_HEADERS,
+        'content-type': 'text/plain; charset=utf-8',
+      },
+    })
+  }
+
+  if (error instanceof Error) {
+    if (error.message === 'Parent directory does not exist.') {
+      return new Response(error.message, {
+        status: 409,
+        headers: {
+          ...DAV_HEADERS,
+          'content-type': 'text/plain; charset=utf-8',
+        },
+      })
+    }
+
+    if (
+      error.message === 'Cannot create the root directory.' ||
+      error.message === 'Directory already exists.' ||
+      error.message === 'A file already exists at the requested directory path.' ||
+      error.message === 'Cannot delete the root path.' ||
+      error.message === 'Cannot move the root path.' ||
+      error.message === 'Target file name is required.' ||
+      error.message === 'Directory name is required.' ||
+      error.message === 'File name is required.' ||
+      error.message === 'Cannot overwrite a directory with file content.' ||
+      error.message === 'Cannot upload to the root path.'
+    ) {
+      return new Response(error.message, {
+        status: 400,
+        headers: {
+          ...DAV_HEADERS,
+          'content-type': 'text/plain; charset=utf-8',
+        },
+      })
+    }
+  }
+
+  return new Response(error instanceof Error ? error.message : 'Unexpected WebDAV write error.', {
+    status: 502,
+    headers: {
+      ...DAV_HEADERS,
+      'content-type': 'text/plain; charset=utf-8',
+    },
+  })
+}
+
 function createRangeHeaders(request: Request): HeadersInit | undefined {
   const range = request.headers.get('range')
   if (!range) {
@@ -329,6 +526,17 @@ function createRangeHeaders(request: Request): HeadersInit | undefined {
 
   return {
     range,
+  }
+}
+
+function createDownloadHeaders(cookie: string, request: Request): HeadersInit {
+  return {
+    cookie,
+    referer: 'https://pan.quark.cn/',
+    origin: 'https://pan.quark.cn',
+    'user-agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) quark-cloud-drive/2.5.56 Chrome/100.0.4896.160 Electron/18.3.5.12 Safari/537.36',
+    ...(createRangeHeaders(request) ?? {}),
   }
 }
 

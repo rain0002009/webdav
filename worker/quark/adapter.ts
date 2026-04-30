@@ -93,6 +93,140 @@ export class QuarkAdapter {
     }
   }
 
+  async makeCollection(pathname: string): Promise<void> {
+    const normalizedPath = normalizePath(pathname)
+    if (normalizedPath === '/') {
+      throw new Error('Cannot create the root directory.')
+    }
+
+    const existing = await this.statPath(normalizedPath)
+    if (existing) {
+      if (existing.entry.isDirectory) {
+        return
+      }
+
+      throw new Error('A file already exists at the requested directory path.')
+    }
+
+    const segments = normalizedPath.split('/').filter(Boolean)
+    let currentPath = ''
+    let parentFid = ROOT_FID
+
+    for (const segment of segments) {
+      currentPath += `/${segment}`
+
+      const current = await this.statPath(currentPath)
+      if (current) {
+        if (!current.entry.isDirectory) {
+          throw new Error('A file already exists at the requested directory path.')
+        }
+
+        parentFid = current.entry.fid
+        continue
+      }
+
+      await this.client.createDirectory(parentFid, segment)
+      this.invalidatePathCaches(currentPath, parentFid)
+
+      const created = await this.statPath(currentPath)
+      if (!created || !created.entry.isDirectory) {
+        throw new Error('Failed to verify created directory.')
+      }
+
+      parentFid = created.entry.fid
+    }
+  }
+
+  async putFile(
+    pathname: string,
+    bytes: Uint8Array,
+    contentType: string,
+  ): Promise<{ created: boolean }> {
+    const normalizedPath = normalizePath(pathname)
+    if (normalizedPath === '/') {
+      throw new Error('Cannot upload to the root path.')
+    }
+
+    const parentPath = getParentPath(normalizedPath)
+    const fileName = getLeafName(normalizedPath)
+    if (!fileName) {
+      throw new Error('File name is required.')
+    }
+
+    const parent = await this.statPath(parentPath)
+    if (!parent || !parent.entry.isDirectory) {
+      throw new Error('Parent directory does not exist.')
+    }
+
+    const existing = await this.statPath(normalizedPath)
+    if (existing) {
+      if (existing.entry.isDirectory) {
+        throw new Error('Cannot overwrite a directory with file content.')
+      }
+
+      await this.client.deleteFile(existing.entry.fid)
+    }
+
+    const result = await this.client.uploadSmallFile({
+      fileName,
+      parentFid: parent.entry.fid,
+      bytes,
+      mimeType: contentType || 'application/octet-stream',
+    })
+    this.invalidatePathCaches(normalizedPath, parent.entry.fid)
+    return result
+  }
+
+  async deletePath(pathname: string): Promise<void> {
+    const normalizedPath = normalizePath(pathname)
+    if (normalizedPath === '/') {
+      throw new Error('Cannot delete the root path.')
+    }
+
+    const target = await this.statPath(normalizedPath)
+    if (!target) {
+      throw new Error('Requested Quark path was not found.')
+    }
+
+    await this.client.deleteFile(target.entry.fid)
+    this.invalidatePathCaches(normalizedPath, target.entry.parentFid)
+  }
+
+  async movePath(sourcePathname: string, targetPathname: string): Promise<void> {
+    const sourcePath = normalizePath(sourcePathname)
+    const targetPath = normalizePath(targetPathname)
+    if (sourcePath === '/' || targetPath === '/') {
+      throw new Error('Cannot move the root path.')
+    }
+
+    const source = await this.statPath(sourcePath)
+    if (!source) {
+      throw new Error('Requested Quark path was not found.')
+    }
+
+    const targetParentPath = getParentPath(targetPath)
+    const targetParent = await this.statPath(targetParentPath)
+    if (!targetParent || !targetParent.entry.isDirectory) {
+      throw new Error('Parent directory does not exist.')
+    }
+
+    const targetName = getLeafName(targetPath)
+    if (!targetName) {
+      throw new Error('Target file name is required.')
+    }
+
+    if (targetParent.entry.fid !== source.entry.parentFid) {
+      await this.client.moveFile(source.entry.fid, targetParent.entry.fid)
+    }
+
+    if (source.entry.name !== targetName) {
+      await this.client.renameFile(source.entry.fid, targetName)
+    }
+
+    this.invalidatePathCaches(sourcePath, source.entry.parentFid)
+    this.invalidatePathCaches(targetPath, targetParent.entry.fid)
+  }
+
   private async resolvePath(pathname: string): Promise<QuarkResolvedPath | null> {
     const normalizedPath = normalizePath(pathname)
     const cachedPath = this.getCachedPath(normalizedPath)
@@ -100,7 +234,7 @@ export class QuarkAdapter {
       return cachedPath
     }
 
-    const segments = normalizedPath.split('/').filter(Boolean).map(decodeURIComponent)
+    const segments = normalizedPath.split('/').filter(Boolean).map(safeDecodePathSegment)
     if (segments.length === 0) {
       const root = {
         path: '/',
@@ -195,6 +329,11 @@ export class QuarkAdapter {
     const cacheKey = `${this.cacheKeyPrefix}:path:${pathname}`
     setCachedValue(pathCache, cacheKey, value, ttlMs)
   }
+
+  private invalidatePathCaches(pathname: string, parentFid: string): void {
+    pathCache.delete(`${this.cacheKeyPrefix}:path:${pathname}`)
+    directoryCache.delete(`${this.cacheKeyPrefix}:dir:${parentFid}`)
+  }
 }
 
 function createCookieFingerprint(cookie: string): string {
@@ -213,6 +352,28 @@ function normalizePath(pathname: string): string {
 
   const normalized = pathname.replace(/\/+/g, '/').replace(/\/$/, '')
   return normalized.startsWith('/') ? normalized : `/${normalized}`
+}
+
+function getParentPath(pathname: string): string {
+  const lastSlashIndex = pathname.lastIndexOf('/')
+  if (lastSlashIndex <= 0) {
+    return '/'
+  }
+
+  return pathname.slice(0, lastSlashIndex)
+}
+
+function getLeafName(pathname: string): string {
+  const lastSlashIndex = pathname.lastIndexOf('/')
+  return pathname.slice(lastSlashIndex + 1)
+}
+
+function safeDecodePathSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
 }
 
 function getCachedValue<T>(cache: Map<string, CacheEntry<T>>, key: string): T | null {
