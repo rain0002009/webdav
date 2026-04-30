@@ -2,11 +2,11 @@ import { QuarkAdapter } from './quark/adapter'
 import { QuarkApiError, type QuarkEntry } from './quark/types'
 import {
   getPersistedQuarkSessionByAccountKey,
-  getWebDavCredentialsByUsername,
   mergeCookieString,
   persistQuarkSessionForAccount,
   setDriveConnectionState,
 } from './session-store'
+import { authenticateWebDavRequest, createWebDavAuthChallengeResponse } from './webdav-auth'
 
 const DAV_HEADERS = {
   DAV: '1',
@@ -26,39 +26,21 @@ const READ_ONLY_DAV_METHODS = new Set([
 export async function handleWebDavRequest(request: Request, env: Env): Promise<Response> {
   try {
     const url = new URL(request.url)
-    const auth = parseBasicAuth(request)
+    const auth = await authenticateWebDavRequest(request, env)
     if (!auth.ok) {
-      return new Response(auth.message, {
-        status: 401,
-        headers: {
-          ...DAV_HEADERS,
-          'content-type': 'text/plain; charset=utf-8',
-          'www-authenticate': 'Basic realm="Quark WebDAV"',
-        },
+      return createWebDavAuthChallengeResponse(await auth.response.text(), {
+        status: auth.response.status,
+        headers: DAV_HEADERS,
       })
     }
 
-    const credentials = await getWebDavCredentialsByUsername(auth.username, env)
-    if (!credentials || !constantTimeEquals(auth.password, credentials.password)) {
-      return new Response('Invalid WebDAV username or password.', {
-        status: 401,
-        headers: {
-          ...DAV_HEADERS,
-          'content-type': 'text/plain; charset=utf-8',
-          'www-authenticate': 'Basic realm="Quark WebDAV"',
-        },
-      })
-    }
+    const credentials = auth.credentials
 
     const persistedSession = await getPersistedQuarkSessionByAccountKey(credentials.accountKey, env)
     if (!persistedSession?.cookie) {
-      return new Response('No bound Quark session is available for this WebDAV account.', {
+      return createWebDavAuthChallengeResponse('No bound Quark session is available for this WebDAV account.', {
         status: 401,
-        headers: {
-          ...DAV_HEADERS,
-          'content-type': 'text/plain; charset=utf-8',
-          'www-authenticate': 'Basic realm="Quark WebDAV"',
-        },
+        headers: DAV_HEADERS,
       })
     }
 
@@ -542,55 +524,6 @@ function createDownloadHeaders(cookie: string, request: Request): HeadersInit {
 
 function isExpiredDownloadResponse(status: number): boolean {
   return status === 401 || status === 403 || status === 404
-}
-
-function parseBasicAuth(
-  request: Request,
-): { ok: true; username: string; password: string } | { ok: false; message: string } {
-  const authorization = request.headers.get('authorization')
-  if (!authorization?.startsWith('Basic ')) {
-    return {
-      ok: false,
-      message: 'Missing WebDAV Basic Auth credentials.',
-    }
-  }
-
-  const encoded = authorization.slice('Basic '.length).trim()
-  let decoded = ''
-  try {
-    decoded = atob(encoded)
-  } catch {
-    return {
-      ok: false,
-      message: 'Malformed WebDAV Basic Auth header.',
-    }
-  }
-
-  const separatorIndex = decoded.indexOf(':')
-  if (separatorIndex < 0) {
-    return {
-      ok: false,
-      message: 'Malformed WebDAV Basic Auth payload.',
-    }
-  }
-
-  const username = decoded.slice(0, separatorIndex)
-  const password = decoded.slice(separatorIndex + 1)
-
-  return { ok: true, username, password }
-}
-
-function constantTimeEquals(left: string, right: string): boolean {
-  if (left.length !== right.length) {
-    return false
-  }
-
-  let result = 0
-  for (let index = 0; index < left.length; index += 1) {
-    result |= left.charCodeAt(index) ^ right.charCodeAt(index)
-  }
-
-  return result === 0
 }
 
 function toHttpDate(value?: string): string {

@@ -15,6 +15,7 @@ import {
   updateQrRequest,
   updateCurrentWebDavCredentials,
 } from '../session-store'
+import { authenticateWebDavRequest } from '../webdav-auth'
 
 type CookieUpdateRequest = {
   cookie?: string
@@ -60,6 +61,13 @@ export async function handleSessionApiRequest(request: Request, env: Env): Promi
   const origin = url.origin
 
   if (route === '/api/session/status' && request.method === 'GET') {
+    const auth = await authenticateWebDavRequest(request, env)
+    if (!auth.ok) {
+      return jsonError(await auth.response.text(), auth.response.status, {
+        headers: Object.fromEntries(auth.response.headers.entries()),
+      })
+    }
+
     await rehydrateCurrentSessionFromPersistence(origin, env)
     await ensureWebDavCredentialsForCurrentSession(env)
     return jsonOk(getSessionStatus(origin))

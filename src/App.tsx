@@ -62,6 +62,15 @@ type WebDavCredentialsResponse = {
   }
 }
 
+type LocalWebDavCredentials = {
+  username: string
+  password: string
+}
+
+type InitialCredentialState = LocalWebDavCredentials & {
+  hasCache: boolean
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     headers: {
@@ -99,7 +108,60 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return payload as T
 }
 
+function getCachedLocalWebDavCredentials(): LocalWebDavCredentials | null {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_CREDENTIALS_KEY)
+    if (!raw) {
+      return null
+    }
+
+    const cached = JSON.parse(raw) as { username?: string; password?: string }
+    if (
+      typeof cached.username !== 'string' ||
+      cached.username.length === 0 ||
+      typeof cached.password !== 'string' ||
+      cached.password.length === 0
+    ) {
+      return null
+    }
+
+    return {
+      username: cached.username,
+      password: cached.password,
+    }
+  } catch {
+    window.localStorage.removeItem(LOCAL_CREDENTIALS_KEY)
+    return null
+  }
+}
+
+function createBasicAuthorizationHeader(username: string, password: string): string {
+  return `Basic ${btoa(`${username}:${password}`)}`
+}
+
+function getInitialCredentialState(): InitialCredentialState {
+  const cached = getCachedLocalWebDavCredentials()
+  if (!cached) {
+    return {
+      username: '',
+      password: '',
+      hasCache: false,
+    }
+  }
+
+  return {
+    username: cached.username,
+    password: cached.password,
+    hasCache: true,
+  }
+}
+
+function persistLocalWebDavCredentials(credentials: LocalWebDavCredentials): void {
+  window.localStorage.setItem(LOCAL_CREDENTIALS_KEY, JSON.stringify(credentials))
+}
+
 function App() {
+  const initialCredentialState = useMemo(() => getInitialCredentialState(), [])
   const [session, setSession] = useState<SessionStatus | null>(null)
   const [cookieInput, setCookieInput] = useState('')
   const [qrState, setQrState] = useState<QrStartResponse | null>(null)
@@ -111,27 +173,35 @@ function App() {
   const [savingCookie, setSavingCookie] = useState(false)
   const [savingWebDavCredentials, setSavingWebDavCredentials] = useState(false)
   const [clearingSession, setClearingSession] = useState(false)
-  const [webdavUsernameInput, setWebdavUsernameInput] = useState('')
-  const [webdavPasswordInput, setWebdavPasswordInput] = useState('')
-  const [hasLocalCredentialsCache, setHasLocalCredentialsCache] = useState(false)
+  const [webdavUsernameInput, setWebdavUsernameInput] = useState(initialCredentialState.username)
+  const [webdavPasswordInput, setWebdavPasswordInput] = useState(initialCredentialState.password)
+  const [hasLocalCredentialsCache, setHasLocalCredentialsCache] = useState(initialCredentialState.hasCache)
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [infoMessage, setInfoMessage] = useState<string | null>(null)
   const qrPollingInFlightRef = useRef(false)
 
-  const webdavEndpoint = useMemo(() => {
-    if (session?.endpoint) {
-      return session.endpoint
-    }
-    return `${window.location.origin}/dav`
-  }, [session?.endpoint])
+  const webdavEndpoint = session?.endpoint ?? `${window.location.origin}/dav`
 
   const loadSession = useCallback(async () => {
     setLoadingSession(true)
     setErrorMessage(null)
     try {
-      const nextSession = await fetchJson<SessionStatus>('/api/session/status')
+      const cachedCredentials = getCachedLocalWebDavCredentials()
+      const nextSession = await fetchJson<SessionStatus>('/api/session/status', {
+        headers: cachedCredentials
+          ? {
+              authorization: createBasicAuthorizationHeader(cachedCredentials.username, cachedCredentials.password),
+            }
+          : undefined,
+      })
       setSession(nextSession)
+      setWebdavUsernameInput(nextSession.webdavCredentials?.username ?? cachedCredentials?.username ?? '')
+      setWebdavPasswordInput(nextSession.webdavCredentials?.password ?? cachedCredentials?.password ?? '')
+      if (nextSession.webdavCredentials?.username && nextSession.webdavCredentials?.password) {
+        persistLocalWebDavCredentials(nextSession.webdavCredentials)
+        setHasLocalCredentialsCache(true)
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to load status')
     } finally {
@@ -140,45 +210,14 @@ function App() {
   }, [])
 
   useEffect(() => {
-    void loadSession()
+    const timer = window.setTimeout(() => {
+      void loadSession()
+    }, 0)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
   }, [loadSession])
-
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(LOCAL_CREDENTIALS_KEY)
-      if (!raw) {
-        return
-      }
-
-      const cached = JSON.parse(raw) as { username?: string; password?: string }
-      if (typeof cached.username === 'string' && cached.username.length > 0) {
-        setWebdavUsernameInput(cached.username)
-        setHasLocalCredentialsCache(true)
-      }
-
-      if (typeof cached.password === 'string' && cached.password.length > 0) {
-        setWebdavPasswordInput(cached.password)
-        setHasLocalCredentialsCache(true)
-      }
-    } catch {
-      window.localStorage.removeItem(LOCAL_CREDENTIALS_KEY)
-    }
-  }, [])
-
-  useEffect(() => {
-    setWebdavUsernameInput(session?.webdavCredentials?.username ?? '')
-    setWebdavPasswordInput(session?.webdavCredentials?.password ?? '')
-    if (session?.webdavCredentials?.username && session?.webdavCredentials?.password) {
-      window.localStorage.setItem(
-        LOCAL_CREDENTIALS_KEY,
-        JSON.stringify({
-          username: session.webdavCredentials.username,
-          password: session.webdavCredentials.password,
-        }),
-      )
-      setHasLocalCredentialsCache(true)
-    }
-  }, [session?.webdavCredentials?.username, session?.webdavCredentials?.password])
 
   const onStartQrLogin = useCallback(async () => {
     setStartingQr(true)
@@ -335,13 +374,7 @@ function App() {
       })
       setWebdavUsernameInput(response.credentials.username)
       setWebdavPasswordInput(response.credentials.password)
-      window.localStorage.setItem(
-        LOCAL_CREDENTIALS_KEY,
-        JSON.stringify({
-          username: response.credentials.username,
-          password: response.credentials.password,
-        }),
-      )
+      persistLocalWebDavCredentials(response.credentials)
       setHasLocalCredentialsCache(true)
       setInfoMessage('WebDAV 用户名和密码已更新。')
       await loadSession()
@@ -401,10 +434,6 @@ function App() {
           <div>
             <dt>会话过期时间</dt>
             <dd>{session?.expiresAt ?? '-'}</dd>
-          </div>
-          <div>
-            <dt>网盘状态</dt>
-            <dd>{session?.driveStatus ?? '-'}</dd>
           </div>
           <div>
             <dt>网盘错误</dt>
