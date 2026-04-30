@@ -31,6 +31,8 @@ type WebDavCredentialsUpdateRequest = {
   password?: string
 }
 
+const UNSAFE_WEBDAV_PASSWORD_CHARS = /[%@:/]/
+
 type LogoutResponse = {
   cleared: boolean
   message: string
@@ -311,6 +313,13 @@ async function parseWebDavCredentialsRequest(
     return {
       ok: false,
       response: jsonError('WebDAV password cannot be empty.', 400),
+    }
+  }
+
+  if (UNSAFE_WEBDAV_PASSWORD_CHARS.test(password)) {
+    return {
+      ok: false,
+      response: jsonError('WebDAV password cannot contain %, @, :, or / because some clients cannot parse those characters safely.', 400),
     }
   }
 

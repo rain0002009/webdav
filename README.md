@@ -159,8 +159,11 @@ pnpm deploy
 1. 打开控制台页面
 2. 先通过二维码登录，或手动粘贴夸克 Cookie
 3. 登录成功后查看或修改 WebDAV 用户名/密码
-4. 使用该用户名/密码连接 `https://<your-worker-domain>/dav`
-5. 通过 WebDAV 客户端访问夸克文件
+4. 在 WebDAV 客户端中把 `https://<your-worker-domain>/dav` 填为服务器地址
+5. 把生成的 WebDAV 用户名和密码分别填写到客户端的认证字段中
+6. 通过 WebDAV 客户端访问夸克文件
+
+> 注意：不要使用 `https://user:pass@host/dav` 这种把用户名和密码直接嵌进 URL 的写法。某些客户端或运行时会因为密码中的 `%`、`@`、`:` 等特殊字符导致 URL 解析失败，出现 `URI malformed` 一类错误。
 
 ## 当前实现边界
 
@@ -181,6 +184,14 @@ pnpm deploy
 ### 为什么 WebDAV 凭据正确，但仍然访问失败？
 
 因为除了用户名/密码匹配之外，还要求该 WebDAV 账户绑定了可用的 Quark 持久化会话。只有凭据正确但没有可用上游会话时，仍然会返回 401。
+
+### 为什么不推荐使用 `https://user:pass@host/dav` 这种 URL？
+
+因为不少 WebDAV 客户端、Node 运行时或代理层会直接解析这类 URL。一旦密码里包含 `%`、`@`、`:` 等特殊字符，而客户端又没有正确转义或容错处理，就可能在解析阶段直接报 `URI malformed`。更稳妥的做法是：
+
+- 服务器地址只填 `https://<your-worker-domain>/dav`
+- 用户名单独填在客户端的用户名字段
+- 密码单独填在客户端的密码字段
 
 ### 为什么某些 WebDAV 客户端写操作表现异常？
 

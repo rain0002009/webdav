@@ -3,6 +3,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import './App.css'
 
 const LOCAL_CREDENTIALS_KEY = 'quark-webdav-credentials'
+const UNSAFE_WEBDAV_PASSWORD_CHARS = /[%@:/]/
 
 type ApiEnvelope<T> = {
   ok?: boolean
@@ -364,6 +365,11 @@ function App() {
       return
     }
 
+    if (UNSAFE_WEBDAV_PASSWORD_CHARS.test(password)) {
+      setErrorMessage('WebDAV 密码不能包含 %, @, :, /，否则某些客户端可能出现 URI malformed。')
+      return
+    }
+
     setSavingWebDavCredentials(true)
     setErrorMessage(null)
     setInfoMessage(null)
@@ -440,6 +446,10 @@ function App() {
             <dd>{session?.error ?? '-'}</dd>
           </div>
         </dl>
+        <p className="card__footnote">
+          使用方式：在 WebDAV 客户端把上方地址作为“服务器地址”；用户名和密码请填写在客户端的认证字段中，不要写成
+          <code>https://user:pass@host/dav</code> 这类 URL。
+        </p>
       </section>
 
       <section className="card">

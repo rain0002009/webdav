@@ -351,12 +351,20 @@ async function handleMove(adapter: QuarkAdapter, request: Request, url: URL): Pr
 }
 
 function normalizeDavPath(pathname: string): string {
-  const value = pathname.replace(/^\/dav/, '')
-  return value === '' ? '/' : value
+  const value = pathname.replace(/^\/dav(?:\/|$)/, '/').replace(/\/+/g, '/')
+  if (value === '' || value === '/') {
+    return '/'
+  }
+
+  return value.endsWith('/') ? value.slice(0, -1) : value
 }
 
 function createPropfindResponse(pathname: string, entry: QuarkEntry): string {
-  const href = pathname === '/' ? '/dav/' : `/dav${pathname}${entry.isDirectory && !pathname.endsWith('/') ? '/' : ''}`
+  const normalizedPath = normalizeDavPath(pathname)
+  const href =
+    normalizedPath === '/'
+      ? '/dav/'
+      : `/dav${normalizedPath}${entry.isDirectory && !normalizedPath.endsWith('/') ? '/' : ''}`
   const resourceType = entry.isDirectory ? '<D:collection/>' : ''
   const contentLength = entry.isDirectory ? '' : `<D:getcontentlength>${String(entry.size)}</D:getcontentlength>`
 
@@ -376,11 +384,14 @@ function createPropfindResponse(pathname: string, entry: QuarkEntry): string {
 }
 
 function joinDavPath(parentPath: string, childName: string): string {
-  if (parentPath === '/') {
-    return `/${childName}`
+  const normalizedParentPath = normalizeDavPath(parentPath)
+  const normalizedChildName = childName.replace(/^\/+/, '')
+
+  if (normalizedParentPath === '/') {
+    return normalizeDavPath(`/${normalizedChildName}`)
   }
 
-  return `${parentPath}/${childName}`
+  return normalizeDavPath(`${normalizedParentPath}/${normalizedChildName}`)
 }
 
 function notFoundResponse(message: string): Response {
