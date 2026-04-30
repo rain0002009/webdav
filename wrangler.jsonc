@@ -16,6 +16,13 @@
 	"upload_source_maps": true,
 	"compatibility_flags": [
 		"nodejs_compat"
+	],
+	"kv_namespaces": [
+		{
+			"binding": "DAV_CREDENTIALS",
+			"id": "2a0cefc77bf94af49fc978263edd79a1",
+			"remote": true
+		}
 	]
 	/**
 	 * Smart Placement
@@ -28,6 +35,14 @@
 	 * databases, object storage, AI inference, real-time communication and more.
 	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
 	 */
+	// To enable persistent WebDAV credentials, create a KV namespace and uncomment the block below.
+	// "kv_namespaces": [
+	// 	{
+	// 		"binding": "DAV_CREDENTIALS",
+	// 		"id": "YOUR_KV_NAMESPACE_ID",
+	// 		"preview_id": "YOUR_KV_PREVIEW_NAMESPACE_ID"
+	// 	}
+	// ],
 	/**
 	 * Environment Variables
 	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
