@@ -1,3 +1,4 @@
+import { constantTimeEquals } from './auth'
 import { QuarkAdapter } from './quark/adapter'
 import { QuarkApiError, type QuarkEntry } from './quark/types'
 import {
@@ -556,7 +557,7 @@ function parseBasicAuth(
   }
 
   const encoded = authorization.slice('Basic '.length).trim()
-  let decoded = ''
+  let decoded: string
   try {
     decoded = atob(encoded)
   } catch {
@@ -578,19 +579,6 @@ function parseBasicAuth(
   const password = decoded.slice(separatorIndex + 1)
 
   return { ok: true, username, password }
-}
-
-function constantTimeEquals(left: string, right: string): boolean {
-  if (left.length !== right.length) {
-    return false
-  }
-
-  let result = 0
-  for (let index = 0; index < left.length; index += 1) {
-    result |= left.charCodeAt(index) ^ right.charCodeAt(index)
-  }
-
-  return result === 0
 }
 
 function toHttpDate(value?: string): string {

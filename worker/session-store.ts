@@ -1,5 +1,6 @@
 export type SessionStatus = {
   loggedIn: boolean
+  accountKey?: string
   user?: string
   expiresAt?: string
   endpoint?: string
@@ -8,6 +9,15 @@ export type SessionStatus = {
   driveStatus?: string
   error?: string
   webdavCredentials?: WebDavCredentials
+  restorableSessions?: PersistedSessionSummary[]
+  requiresAccountSelection?: boolean
+}
+
+export type PersistedSessionSummary = {
+  accountKey: string
+  user?: string
+  expiresAt?: string
+  updatedAt: string
 }
 
 export type WebDavCredentials = {
@@ -155,10 +165,15 @@ export function updateQrRequest(
 export function saveCookieSession(cookie: string, origin: string): SessionStatus {
   const sanitizedCookie = cookie.trim()
   const accountKey = extractCookieAccountKey(sanitizedCookie)
+  if (!accountKey) {
+    throw new Error('Cookie does not contain a stable account identity.')
+  }
+
   state.cookie = sanitizedCookie
   const existingCredentials = state.webdavCredentials?.accountKey === accountKey ? state.webdavCredentials : undefined
   state.session = {
     loggedIn: true,
+    accountKey,
     user: extractCookieUserHint(sanitizedCookie),
     expiresAt: new Date(Date.now() + COOKIE_TTL_MS).toISOString(),
     endpoint: createDavEndpoint(origin),
@@ -210,10 +225,14 @@ export function mergeUpstreamCookies(cookieUpdates: string[]): string | null {
   state.cookie = nextCookie || undefined
   if (state.session.loggedIn) {
     const accountKey = nextCookie ? extractCookieAccountKey(nextCookie) : null
+    const resolvedAccountKey = accountKey ?? state.session.accountKey
     const existingCredentials =
-      accountKey && state.webdavCredentials?.accountKey === accountKey ? state.webdavCredentials : undefined
+      resolvedAccountKey && state.webdavCredentials?.accountKey === resolvedAccountKey
+        ? state.webdavCredentials
+        : undefined
     state.session = {
       ...state.session,
+      accountKey: resolvedAccountKey,
       user: nextCookie ? extractCookieUserHint(nextCookie) : state.session.user,
       webdavCredentials: existingCredentials,
     }
@@ -243,12 +262,11 @@ export function clearSession(): void {
 }
 
 export async function ensureWebDavCredentialsForCurrentSession(env?: Env): Promise<WebDavCredentials | null> {
-  if (!state.session.loggedIn || !state.cookie) {
+  if (!state.session.loggedIn || !state.cookie || !state.session.accountKey) {
     return null
   }
 
-  const accountKey = extractCookieAccountKey(state.cookie)
-  const credentials = await ensureCredentialsForAccount(accountKey, env)
+  const credentials = await ensureCredentialsForAccount(state.session.accountKey, env)
   state.session = {
     ...state.session,
     webdavCredentials: credentials,
@@ -273,26 +291,53 @@ export async function rehydrateCurrentSessionFromPersistence(origin: string, env
     return true
   }
 
+  const persistedSessions = await listPersistedQuarkSessions(env)
+  if (persistedSessions.length !== 1) {
+    return false
+  }
+
+  return restorePersistedSession(persistedSessions[0].accountKey, origin, env)
+}
+
+export async function listPersistedQuarkSessions(env?: Env): Promise<PersistedSessionSummary[]> {
   const namespace = env?.DAV_CREDENTIALS
   if (!namespace) {
-    return false
+    return []
   }
 
-  const listedKeys = await namespace.list({ prefix: 'quarksession:v1:', limit: 10 })
-  const candidateKey = listedKeys.keys.at(0)?.name
-  if (!candidateKey) {
-    return false
-  }
+  const listedKeys = await namespace.list({ prefix: 'quarksession:v1:', limit: 100 })
+  const results: Array<PersistedSessionSummary | null> = await Promise.all(
+    listedKeys.keys.map(async (entry): Promise<PersistedSessionSummary | null> => {
+      const accountKey = entry.name.replace(/^quarksession:v1:/, '')
+      const persistedSession = await getPersistedQuarkSessionByAccountKey(accountKey, env)
+      if (!persistedSession?.cookie || isPersistedSessionExpired(persistedSession)) {
+        return null
+      }
 
-  const accountKey = candidateKey.replace(/^quarksession:v1:/, '')
+      return {
+        accountKey: persistedSession.accountKey,
+        user: persistedSession.user,
+        expiresAt: persistedSession.expiresAt,
+        updatedAt: persistedSession.updatedAt,
+      } satisfies PersistedSessionSummary
+    }),
+  )
+
+  return results
+    .filter((value): value is PersistedSessionSummary => value !== null)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+}
+
+export async function restorePersistedSession(accountKey: string, origin: string, env?: Env): Promise<boolean> {
   const persistedSession = await getPersistedQuarkSessionByAccountKey(accountKey, env)
-  if (!persistedSession?.cookie) {
+  if (!persistedSession?.cookie || isPersistedSessionExpired(persistedSession)) {
     return false
   }
 
   state.cookie = persistedSession.cookie
   state.session = {
     loggedIn: true,
+    accountKey: persistedSession.accountKey,
     user: persistedSession.user ?? extractCookieUserHint(persistedSession.cookie),
     expiresAt: persistedSession.expiresAt,
     endpoint: createDavEndpoint(origin),
@@ -338,13 +383,12 @@ export async function updateCurrentWebDavCredentials(
 }
 
 export async function persistQuarkSessionForCurrentSession(env?: Env): Promise<void> {
-  if (!state.session.loggedIn || !state.cookie) {
+  if (!state.session.loggedIn || !state.cookie || !state.session.accountKey) {
     return
   }
 
-  const accountKey = extractCookieAccountKey(state.cookie)
   await persistQuarkSessionForAccount(
-    accountKey,
+    state.session.accountKey,
     state.cookie,
     {
       user: state.session.user,
@@ -380,7 +424,7 @@ export async function getPersistedQuarkSessionByAccountKey(
   accountKey: string,
   env?: Env,
 ): Promise<PersistedQuarkSession | null> {
-  if (state.cookie && extractCookieAccountKey(state.cookie) === accountKey) {
+  if (state.cookie && state.session.accountKey === accountKey) {
     return {
       accountKey,
       cookie: state.cookie,
@@ -478,11 +522,25 @@ export function getSnapshot(origin: string): SessionSnapshot {
 function createLoggedOutSession(): SessionStatus {
   return {
     loggedIn: false,
+    accountKey: undefined,
     authType: undefined,
     driveReady: false,
     driveStatus: 'Waiting for Quark session.',
     error: undefined,
   }
+}
+
+function isPersistedSessionExpired(session: Pick<PersistedQuarkSession, 'expiresAt'>): boolean {
+  if (!session.expiresAt) {
+    return false
+  }
+
+  const expiresAt = new Date(session.expiresAt)
+  if (Number.isNaN(expiresAt.getTime())) {
+    return true
+  }
+
+  return expiresAt.getTime() <= Date.now()
 }
 
 function createDavEndpoint(origin: string): string {
@@ -526,17 +584,34 @@ function extractCookieUserHint(cookie: string): string {
   }
 }
 
-function extractCookieAccountKey(cookie: string): string {
+function extractCookieAccountKey(cookie: string): string | null {
   const match = cookie.match(/(?:^|;\s*)(?:uid|user(?:name)?|nickname)=([^;]+)/i)
   if (!match) {
-    return 'quark-session'
+    return extractCookieFingerprintAccountKey(cookie)
   }
 
   try {
-    return decodeURIComponent(match[1])
+    return `identity:${decodeURIComponent(match[1])}`
   } catch {
-    return match[1]
+    return `identity:${match[1]}`
   }
+}
+
+function extractCookieFingerprintAccountKey(cookie: string): string | null {
+  const cookieMap = parseCookieString(cookie)
+  const fingerprint = ['__puus', '__pus', '__kp', '__kps']
+    .map((key) => {
+      const value = cookieMap.get(key)?.trim()
+      return value ? `${key}=${value}` : null
+    })
+    .filter((value): value is string => value !== null)
+    .join(';')
+
+  if (!fingerprint) {
+    return null
+  }
+
+  return `cookie:${hashString(fingerprint)}`
 }
 
 async function ensureCredentialsForAccount(accountKey: string, env?: Env): Promise<WebDavCredentials> {
@@ -653,6 +728,16 @@ function generateRandomPassword(): string {
   const bytes = new Uint8Array(18)
   crypto.getRandomValues(bytes)
   return [...bytes].map((value) => alphabet[value % alphabet.length]).join('')
+}
+
+function hashString(value: string): string {
+  let hash = 5381
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) + hash) ^ value.charCodeAt(index)
+  }
+
+  return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
 export function mergeCookieString(

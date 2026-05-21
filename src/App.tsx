@@ -14,6 +14,7 @@ type ApiEnvelope<T> = {
 
 type SessionStatus = {
   loggedIn: boolean
+  accountKey?: string
   user?: string
   expiresAt?: string
   endpoint?: string
@@ -21,6 +22,13 @@ type SessionStatus = {
   driveReady?: boolean
   driveStatus?: string
   error?: string
+  restorableSessions?: Array<{
+    accountKey: string
+    user?: string
+    expiresAt?: string
+    updatedAt: string
+  }>
+  requiresAccountSelection?: boolean
   webdavCredentials?: {
     username: string
     password: string
@@ -62,6 +70,27 @@ type WebDavCredentialsResponse = {
   }
 }
 
+type RestoreSessionResponse = SessionStatus
+type WebDavLoginResponse = SessionStatus
+
+function readLocalCredentials(): { username: string; password: string } {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_CREDENTIALS_KEY)
+    if (!raw) {
+      return { username: '', password: '' }
+    }
+
+    const cached = JSON.parse(raw) as { username?: string; password?: string }
+    return {
+      username: typeof cached.username === 'string' ? cached.username : '',
+      password: typeof cached.password === 'string' ? cached.password : '',
+    }
+  } catch {
+    window.localStorage.removeItem(LOCAL_CREDENTIALS_KEY)
+    return { username: '', password: '' }
+  }
+}
+
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     headers: {
@@ -100,6 +129,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function App() {
+  const initialLocalCredentials = readLocalCredentials()
   const [session, setSession] = useState<SessionStatus | null>(null)
   const [cookieInput, setCookieInput] = useState('')
   const [qrState, setQrState] = useState<QrStartResponse | null>(null)
@@ -110,10 +140,10 @@ function App() {
   const [pollingQr, setPollingQr] = useState(false)
   const [savingCookie, setSavingCookie] = useState(false)
   const [savingWebDavCredentials, setSavingWebDavCredentials] = useState(false)
+  const [restoringSession, setRestoringSession] = useState(false)
   const [clearingSession, setClearingSession] = useState(false)
-  const [webdavUsernameInput, setWebdavUsernameInput] = useState('')
-  const [webdavPasswordInput, setWebdavPasswordInput] = useState('')
-  const [hasLocalCredentialsCache, setHasLocalCredentialsCache] = useState(false)
+  const [webdavUsernameInput, setWebdavUsernameInput] = useState(initialLocalCredentials.username)
+  const [webdavPasswordInput, setWebdavPasswordInput] = useState(initialLocalCredentials.password)
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [infoMessage, setInfoMessage] = useState<string | null>(null)
@@ -132,6 +162,17 @@ function App() {
     try {
       const nextSession = await fetchJson<SessionStatus>('/api/session/status')
       setSession(nextSession)
+      setWebdavUsernameInput(nextSession.webdavCredentials?.username ?? '')
+      setWebdavPasswordInput(nextSession.webdavCredentials?.password ?? '')
+      if (nextSession.webdavCredentials?.username && nextSession.webdavCredentials?.password) {
+        window.localStorage.setItem(
+          LOCAL_CREDENTIALS_KEY,
+          JSON.stringify({
+            username: nextSession.webdavCredentials.username,
+            password: nextSession.webdavCredentials.password,
+          }),
+        )
+      }
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to load status')
     } finally {
@@ -140,45 +181,14 @@ function App() {
   }, [])
 
   useEffect(() => {
-    void loadSession()
+    const timer = window.setTimeout(() => {
+      void loadSession()
+    }, 0)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
   }, [loadSession])
-
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(LOCAL_CREDENTIALS_KEY)
-      if (!raw) {
-        return
-      }
-
-      const cached = JSON.parse(raw) as { username?: string; password?: string }
-      if (typeof cached.username === 'string' && cached.username.length > 0) {
-        setWebdavUsernameInput(cached.username)
-        setHasLocalCredentialsCache(true)
-      }
-
-      if (typeof cached.password === 'string' && cached.password.length > 0) {
-        setWebdavPasswordInput(cached.password)
-        setHasLocalCredentialsCache(true)
-      }
-    } catch {
-      window.localStorage.removeItem(LOCAL_CREDENTIALS_KEY)
-    }
-  }, [])
-
-  useEffect(() => {
-    setWebdavUsernameInput(session?.webdavCredentials?.username ?? '')
-    setWebdavPasswordInput(session?.webdavCredentials?.password ?? '')
-    if (session?.webdavCredentials?.username && session?.webdavCredentials?.password) {
-      window.localStorage.setItem(
-        LOCAL_CREDENTIALS_KEY,
-        JSON.stringify({
-          username: session.webdavCredentials.username,
-          password: session.webdavCredentials.password,
-        }),
-      )
-      setHasLocalCredentialsCache(true)
-    }
-  }, [session?.webdavCredentials?.username, session?.webdavCredentials?.password])
 
   const onStartQrLogin = useCallback(async () => {
     setStartingQr(true)
@@ -301,8 +311,9 @@ function App() {
       setQrState(null)
       setQrStatus(null)
       setCookieInput('')
+      setWebdavUsernameInput('')
+      setWebdavPasswordInput('')
       window.localStorage.removeItem(LOCAL_CREDENTIALS_KEY)
-      setHasLocalCredentialsCache(false)
       setInfoMessage('Session cleared.')
       await loadSession()
     } catch (error) {
@@ -342,7 +353,6 @@ function App() {
           password: response.credentials.password,
         }),
       )
-      setHasLocalCredentialsCache(true)
       setInfoMessage('WebDAV 用户名和密码已更新。')
       await loadSession()
     } catch (error) {
@@ -352,8 +362,58 @@ function App() {
     }
   }, [loadSession, webdavPasswordInput, webdavUsernameInput])
 
+  const onLoginWithWebDavCredentials = useCallback(async () => {
+    const username = webdavUsernameInput.trim()
+    const password = webdavPasswordInput.trim()
+    if (!username) {
+      setErrorMessage('WebDAV 用户名不能为空。')
+      return
+    }
+
+    if (!password) {
+      setErrorMessage('WebDAV 密码不能为空。')
+      return
+    }
+
+    setRestoringSession(true)
+    setErrorMessage(null)
+    setInfoMessage(null)
+    try {
+      const restoredSession = await fetchJson<WebDavLoginResponse>('/api/session/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      })
+      setSession(restoredSession)
+      setWebdavUsernameInput(restoredSession.webdavCredentials?.username ?? username)
+      setWebdavPasswordInput(restoredSession.webdavCredentials?.password ?? password)
+      setInfoMessage('已通过 WebDAV 用户名和密码恢复夸克会话。')
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'WebDAV 登录失败')
+    } finally {
+      setRestoringSession(false)
+    }
+  }, [webdavPasswordInput, webdavUsernameInput])
+
+  const onRestoreSession = useCallback(async (accountKey: string) => {
+    setRestoringSession(true)
+    setErrorMessage(null)
+    setInfoMessage(null)
+    try {
+      const restoredSession = await fetchJson<RestoreSessionResponse>('/api/session/restore', {
+        method: 'POST',
+        body: JSON.stringify({ accountKey }),
+      })
+      setSession(restoredSession)
+      setInfoMessage('已恢复所选夸克会话。')
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '恢复会话失败')
+    } finally {
+      setRestoringSession(false)
+    }
+  }, [])
+
   const isBusy =
-    loadingSession || startingQr || pollingQr || savingCookie || savingWebDavCredentials || clearingSession
+    loadingSession || startingQr || pollingQr || savingCookie || savingWebDavCredentials || restoringSession || clearingSession
 
   const qrRequestId = qrStatus?.requestId ?? qrState?.requestId
   const qrUrl = qrStatus?.qrUrl ?? qrState?.qrUrl
@@ -449,22 +509,6 @@ function App() {
               </label>
             </div>
           </>
-        ) : hasLocalCredentialsCache ? (
-          <>
-            <p className="card__footnote">
-              这里显示的是当前浏览器本地缓存的上一组 WebDAV 凭据，方便你刷新页面后继续查看。真正使用前，仍需要先恢复对应的夸克登录状态。
-            </p>
-            <div className="credentials-grid credentials-grid--readonly">
-              <label className="field credentials-grid__field" htmlFor="webdav-username-input">
-                <span>本地缓存的 WebDAV 用户名</span>
-                <input id="webdav-username-input" type="text" value={webdavUsernameInput} disabled />
-              </label>
-              <label className="field credentials-grid__field" htmlFor="webdav-password-input">
-                <span>本地缓存的 WebDAV 密码</span>
-                <input id="webdav-password-input" type="text" value={webdavPasswordInput} disabled />
-              </label>
-            </div>
-          </>
         ) : (
           <p className="card__footnote">请先完成夸克登录。登录成功后，系统会自动为当前夸克账户生成一组 WebDAV 用户名和密码。</p>
         )}
@@ -472,6 +516,71 @@ function App() {
 
       {!session?.loggedIn ? (
         <>
+          <section className="card">
+            <div className="card__header">
+              <h2>WebDAV 用户名密码登录</h2>
+              <button className="button" onClick={() => void onLoginWithWebDavCredentials()} disabled={isBusy}>
+                {restoringSession ? '登录中...' : '登录并恢复会话'}
+              </button>
+            </div>
+            <p className="card__footnote">
+              如果你已经有这套 WebDAV 用户名和密码，可以像传统网页登录一样直接输入。系统会校验这组凭据，并恢复它当前绑定的夸克会话。
+            </p>
+            <div className="credentials-grid">
+              <label className="field credentials-grid__field" htmlFor="webdav-login-username-input">
+                <span>WebDAV 用户名</span>
+                <input
+                  id="webdav-login-username-input"
+                  type="text"
+                  value={webdavUsernameInput}
+                  onChange={(event) => setWebdavUsernameInput(event.target.value)}
+                  disabled={isBusy}
+                />
+              </label>
+              <label className="field credentials-grid__field" htmlFor="webdav-login-password-input">
+                <span>WebDAV 密码</span>
+                <input
+                  id="webdav-login-password-input"
+                  type="password"
+                  value={webdavPasswordInput}
+                  onChange={(event) => setWebdavPasswordInput(event.target.value)}
+                  disabled={isBusy}
+                />
+              </label>
+            </div>
+          </section>
+
+          {session?.restorableSessions?.length ? (
+            <section className="card">
+              <div className="card__header">
+                <h2>{session.requiresAccountSelection ? '选择要恢复的夸克会话' : '可恢复的夸克会话'}</h2>
+              </div>
+              <p className="card__footnote">
+                {session.requiresAccountSelection
+                  ? '检测到多条持久化会话。为了避免把 WebDAV 凭据绑定到错误账户，系统不会自动恢复，请手动选择。'
+                  : '检测到一条可恢复的持久化会话。你可以手动恢复后再使用当前账户的 WebDAV 凭据。'}
+              </p>
+              <div className="credentials-grid credentials-grid--readonly">
+                {session.restorableSessions.map((persistedSession) => (
+                  <div key={persistedSession.accountKey} className="field credentials-grid__field">
+                    <span>{persistedSession.user ?? persistedSession.accountKey}</span>
+                    <input type="text" value={persistedSession.accountKey} disabled />
+                    <small>最近更新：{persistedSession.updatedAt}</small>
+                    <small>过期时间：{persistedSession.expiresAt ?? '-'}</small>
+                    <button
+                      className="button"
+                      type="button"
+                      onClick={() => void onRestoreSession(persistedSession.accountKey)}
+                      disabled={isBusy}
+                    >
+                      {restoringSession ? '恢复中...' : '恢复此会话'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           <section className="card">
             <div className="card__header">
               <h2>二维码登录</h2>

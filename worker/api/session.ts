@@ -1,3 +1,4 @@
+import { constantTimeEquals } from '../auth'
 import { jsonError, jsonMessage, jsonOk, readJsonBody } from '../http'
 import { QuarkClient } from '../quark/client'
 import {
@@ -6,10 +7,13 @@ import {
   getQrRequest,
   getSessionStatus,
   getSessionCookie,
+  getWebDavCredentialsByUsername,
   linkQrRequestToCookieSession,
+  listPersistedQuarkSessions,
   mergeUpstreamCookies,
   persistQuarkSessionForCurrentSession,
   rehydrateCurrentSessionFromPersistence,
+  restorePersistedSession,
   saveQrRequest,
   saveCookieSession,
   updateQrRequest,
@@ -33,6 +37,15 @@ type WebDavCredentialsUpdateRequest = {
 type LogoutResponse = {
   cleared: boolean
   message: string
+}
+
+type RestoreSessionRequest = {
+  accountKey?: string
+}
+
+type WebDavLoginRequest = {
+  username?: string
+  password?: string
 }
 
 type QrStartResponse = {
@@ -60,9 +73,14 @@ export async function handleSessionApiRequest(request: Request, env: Env): Promi
   const origin = url.origin
 
   if (route === '/api/session/status' && request.method === 'GET') {
-    await rehydrateCurrentSessionFromPersistence(origin, env)
+    const restored = await rehydrateCurrentSessionFromPersistence(origin, env)
+    const persistedSessions = restored ? [] : await listPersistedQuarkSessions(env)
     await ensureWebDavCredentialsForCurrentSession(env)
-    return jsonOk(getSessionStatus(origin))
+    return jsonOk({
+      ...getSessionStatus(origin),
+      restorableSessions: persistedSessions,
+      requiresAccountSelection: !restored && persistedSessions.length > 1,
+    })
   }
 
   if (route === '/api/session/qr/start' && request.method === 'POST') {
@@ -196,7 +214,12 @@ export async function handleSessionApiRequest(request: Request, env: Env): Promi
       return body.response
     }
 
-    saveCookieSession(body.cookie, origin)
+    try {
+      saveCookieSession(body.cookie, origin)
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : 'Cookie session could not be bound to an account.', 400)
+    }
+
     await persistQuarkSessionForCurrentSession(env)
     await ensureWebDavCredentialsForCurrentSession(env)
 
@@ -227,6 +250,49 @@ export async function handleSessionApiRequest(request: Request, env: Env): Promi
       },
       'WebDAV credentials updated.',
     )
+  }
+
+  if (route === '/api/session/login' && request.method === 'POST') {
+    const body = await parseWebDavLoginRequest(request)
+    if (!body.ok) {
+      return body.response
+    }
+
+    const credentials = await getWebDavCredentialsByUsername(body.username, env)
+    if (!credentials || !constantTimeEquals(body.password, credentials.password)) {
+      return jsonError('WebDAV 用户名或密码不正确。', 401)
+    }
+
+    const restored = await restorePersistedSession(credentials.accountKey, origin, env)
+    if (!restored) {
+      return jsonError('该 WebDAV 账户对应的夸克会话不存在或已过期，请重新扫码或重新导入 Cookie。', 401)
+    }
+
+    await ensureWebDavCredentialsForCurrentSession(env)
+    return jsonMessage(getSessionStatus(origin), 'WebDAV login restored the persisted session.')
+  }
+
+  if (route === '/api/session/restore' && request.method === 'POST') {
+    let body: RestoreSessionRequest
+
+    try {
+      body = await readJsonBody<RestoreSessionRequest>(request)
+    } catch (error) {
+      return jsonError(error instanceof Error ? error.message : 'Invalid JSON body.', 400)
+    }
+
+    const accountKey = body.accountKey?.trim()
+    if (!accountKey) {
+      return jsonError('Account key is required.', 400)
+    }
+
+    const restored = await restorePersistedSession(accountKey, origin, env)
+    if (!restored) {
+      return jsonError('Requested persisted session was not found.', 404)
+    }
+
+    await ensureWebDavCredentialsForCurrentSession(env)
+    return jsonMessage(getSessionStatus(origin), 'Persisted session restored.')
   }
 
   if (route === '/api/session/logout' && request.method === 'POST') {
@@ -283,6 +349,46 @@ async function parseWebDavCredentialsRequest(
 
   try {
     body = await readJsonBody<WebDavCredentialsUpdateRequest>(request)
+  } catch (error) {
+    return {
+      ok: false,
+      response: jsonError(error instanceof Error ? error.message : 'Invalid JSON body.', 400),
+    }
+  }
+
+  const username = body.username?.trim()
+  const password = body.password?.trim()
+  if (!username) {
+    return {
+      ok: false,
+      response: jsonError('WebDAV username cannot be empty.', 400),
+    }
+  }
+
+  if (!password) {
+    return {
+      ok: false,
+      response: jsonError('WebDAV password cannot be empty.', 400),
+    }
+  }
+
+  return {
+    ok: true,
+    username,
+    password,
+  }
+}
+
+async function parseWebDavLoginRequest(
+  request: Request,
+): Promise<
+  | { ok: true; username: string; password: string }
+  | { ok: false; response: Response }
+> {
+  let body: WebDavLoginRequest
+
+  try {
+    body = await readJsonBody<WebDavLoginRequest>(request)
   } catch (error) {
     return {
       ok: false,
