@@ -724,7 +724,7 @@ function generateDefaultUsername(accountKey: string): string {
 }
 
 function generateRandomPassword(): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*'
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!#$^&*._-'
   const bytes = new Uint8Array(18)
   crypto.getRandomValues(bytes)
   return [...bytes].map((value) => alphabet[value % alphabet.length]).join('')
