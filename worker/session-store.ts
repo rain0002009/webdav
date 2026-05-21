@@ -179,7 +179,7 @@ export function saveCookieSession(cookie: string, origin: string): SessionStatus
     endpoint: createDavEndpoint(origin),
     authType: 'cookie',
     driveReady: false,
-    driveStatus: 'Cookie session stored. Quark upstream bridge will be validated on first WebDAV request.',
+    driveStatus: 'Cookie 已保存，打开首页时会自动探测夸克网盘连接状态。',
     error: undefined,
     webdavCredentials: existingCredentials,
   }
@@ -343,7 +343,7 @@ export async function restorePersistedSession(accountKey: string, origin: string
     endpoint: createDavEndpoint(origin),
     authType: 'cookie',
     driveReady: false,
-    driveStatus: 'Restored persisted Quark session. Upstream bridge will be validated on next access.',
+    driveStatus: '已恢复夸克会话，正在等待首页自动探测网盘连接状态。',
     error: undefined,
   }
 
@@ -418,6 +418,24 @@ export async function persistQuarkSessionForAccount(
   }
 
   await namespace.put(getQuarkSessionStorageKey(accountKey), JSON.stringify(record))
+}
+
+export async function syncPersistedCookieForAccount(
+  accountKey: string,
+  cookie: string,
+  metadata?: { user?: string; expiresAt?: string },
+  env?: Env,
+): Promise<void> {
+  if (state.session.accountKey === accountKey) {
+    state.cookie = cookie
+    state.session = {
+      ...state.session,
+      user: metadata?.user ?? extractCookieUserHint(cookie),
+      expiresAt: metadata?.expiresAt ?? state.session.expiresAt,
+    }
+  }
+
+  await persistQuarkSessionForAccount(accountKey, cookie, metadata, env)
 }
 
 export async function getPersistedQuarkSessionByAccountKey(
@@ -525,7 +543,7 @@ function createLoggedOutSession(): SessionStatus {
     accountKey: undefined,
     authType: undefined,
     driveReady: false,
-    driveStatus: 'Waiting for Quark session.',
+    driveStatus: '等待夸克会话登录。',
     error: undefined,
   }
 }

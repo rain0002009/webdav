@@ -5,9 +5,17 @@ import {
   getPersistedQuarkSessionByAccountKey,
   getWebDavCredentialsByUsername,
   mergeCookieString,
-  persistQuarkSessionForAccount,
   setDriveConnectionState,
+  syncPersistedCookieForAccount,
 } from './session-store'
+
+type PersistedAccountSession = NonNullable<Awaited<ReturnType<typeof getPersistedQuarkSessionByAccountKey>>>
+
+type AccountAdapterContext = {
+  adapter: QuarkAdapter
+  persistedSession: PersistedAccountSession
+  accountCookie: () => string
+}
 
 const DAV_HEADERS = {
   DAV: '1',
@@ -51,8 +59,8 @@ export async function handleWebDavRequest(request: Request, env: Env): Promise<R
       })
     }
 
-    const persistedSession = await getPersistedQuarkSessionByAccountKey(credentials.accountKey, env)
-    if (!persistedSession?.cookie) {
+    const accountContext = await createAccountAdapterContext(credentials.accountKey, env)
+    if (!accountContext) {
       return new Response('No bound Quark session is available for this WebDAV account.', {
         status: 401,
         headers: {
@@ -62,26 +70,7 @@ export async function handleWebDavRequest(request: Request, env: Env): Promise<R
         },
       })
     }
-
-    let accountCookie = persistedSession.cookie
-
-    const adapter = new QuarkAdapter(accountCookie, async (cookieUpdates) => {
-      const mergedCookie = mergeCookieString(accountCookie, cookieUpdates)
-      if (!mergedCookie) {
-        return
-      }
-
-      accountCookie = mergedCookie
-      await persistQuarkSessionForAccount(
-        credentials.accountKey,
-        mergedCookie,
-        {
-          user: persistedSession.user,
-          expiresAt: persistedSession.expiresAt,
-        },
-        env,
-      )
-    })
+    const { adapter, persistedSession } = accountContext
 
     if (request.method === 'OPTIONS') {
       return new Response(null, {
@@ -95,7 +84,7 @@ export async function handleWebDavRequest(request: Request, env: Env): Promise<R
     }
 
     if (request.method === 'GET' || request.method === 'HEAD') {
-      return handleGet(adapter, url, request, accountCookie, persistedSession.user)
+      return handleGet(adapter, url, request, accountContext.accountCookie(), persistedSession.user)
     }
 
     if (request.method === 'MKCOL') {
@@ -146,6 +135,29 @@ export async function handleWebDavRequest(request: Request, env: Env): Promise<R
   }
 }
 
+export async function probeDriveConnection(accountKey: string, env: Env): Promise<void> {
+  const accountContext = await createAccountAdapterContext(accountKey, env)
+  if (!accountContext) {
+    setDriveConnectionState({
+      driveReady: false,
+      driveStatus: '当前 WebDAV 账户未绑定可用的夸克会话。',
+      error: 'missing-quark-session',
+    })
+    return
+  }
+
+  try {
+    await accountContext.adapter.listPath('/')
+    setDriveConnectionState({
+      driveReady: true,
+      driveStatus: '夸克网盘连接正常。',
+      error: undefined,
+    })
+  } catch (error) {
+    handleDriveConnectionError(error)
+  }
+}
+
 async function handlePropfind(adapter: QuarkAdapter, url: URL, request: Request): Promise<Response> {
   const pathname = normalizeDavPath(url.pathname)
   const depth = request.headers.get('depth') ?? '0'
@@ -159,7 +171,7 @@ async function handlePropfind(adapter: QuarkAdapter, url: URL, request: Request)
 
     setDriveConnectionState({
       driveReady: true,
-      driveStatus: 'Quark upstream read bridge is connected.',
+      driveStatus: '夸克网盘连接正常。',
     })
 
     const responses = [createPropfindResponse(pathname, target.entry)]
@@ -203,7 +215,7 @@ async function handleGet(
 
     setDriveConnectionState({
       driveReady: true,
-      driveStatus: 'Quark upstream read bridge is connected.',
+      driveStatus: '夸克网盘连接正常。',
     })
 
     if (target.entry.isDirectory) {
@@ -255,7 +267,7 @@ async function handleGet(
     if (!upstreamResponse.ok) {
       setDriveConnectionState({
         driveReady: false,
-        driveStatus: 'Quark upstream returned an error while streaming file content.',
+        driveStatus: '夸克网盘文件读取失败。',
         error: `upstream-download-${upstreamResponse.status}`,
       })
 
@@ -412,13 +424,58 @@ function notFoundResponse(message: string): Response {
   })
 }
 
-function handleQuarkError(error: unknown): Response {
+async function createAccountAdapterContext(accountKey: string, env: Env): Promise<AccountAdapterContext | null> {
+  const persistedSession = await getPersistedQuarkSessionByAccountKey(accountKey, env)
+  if (!persistedSession?.cookie) {
+    return null
+  }
+
+  let accountCookie = persistedSession.cookie
+  const adapter = new QuarkAdapter(accountCookie, async (cookieUpdates) => {
+    const mergedCookie = mergeCookieString(accountCookie, cookieUpdates)
+    if (!mergedCookie) {
+      return
+    }
+
+    accountCookie = mergedCookie
+    await syncPersistedCookieForAccount(
+      accountKey,
+      mergedCookie,
+      {
+        user: persistedSession.user,
+        expiresAt: persistedSession.expiresAt,
+      },
+      env,
+    )
+  })
+
+  return {
+    adapter,
+    persistedSession,
+    accountCookie: () => accountCookie,
+  }
+}
+
+function handleDriveConnectionError(error: unknown): void {
   if (error instanceof QuarkApiError) {
     setDriveConnectionState({
       driveReady: false,
-      driveStatus: 'Quark upstream bridge is unavailable.',
+      driveStatus: '夸克网盘当前不可用。',
       error: error.message,
     })
+    return
+  }
+
+  setDriveConnectionState({
+    driveReady: false,
+    driveStatus: '夸克网盘探测失败，请稍后重试。',
+    error: error instanceof Error ? error.message : 'unknown-upstream-error',
+  })
+}
+
+function handleQuarkError(error: unknown): Response {
+  if (error instanceof QuarkApiError) {
+    handleDriveConnectionError(error)
 
     const status = error.status >= 400 && error.status < 500 ? 502 : 502
     return new Response(error.message, {
@@ -440,11 +497,7 @@ function handleQuarkError(error: unknown): Response {
     })
   }
 
-  setDriveConnectionState({
-    driveReady: false,
-    driveStatus: 'Quark upstream bridge failed unexpectedly.',
-    error: error instanceof Error ? error.message : 'unknown-upstream-error',
-  })
+  handleDriveConnectionError(error)
 
   return new Response(error instanceof Error ? error.message : 'Unexpected Quark upstream error.', {
     status: 502,

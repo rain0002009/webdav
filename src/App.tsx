@@ -459,10 +459,6 @@ function App() {
             <dd>{session?.loggedIn ? '已登录' : '未登录'}</dd>
           </div>
           <div>
-            <dt>会话过期时间</dt>
-            <dd>{session?.expiresAt ?? '-'}</dd>
-          </div>
-          <div>
             <dt>网盘状态</dt>
             <dd>{session?.driveStatus ?? '-'}</dd>
           </div>
@@ -566,7 +562,6 @@ function App() {
                     <span>{persistedSession.user ?? persistedSession.accountKey}</span>
                     <input type="text" value={persistedSession.accountKey} disabled />
                     <small>最近更新：{persistedSession.updatedAt}</small>
-                    <small>过期时间：{persistedSession.expiresAt ?? '-'}</small>
                     <button
                       className="button"
                       type="button"

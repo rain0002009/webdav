@@ -19,6 +19,7 @@ import {
   updateQrRequest,
   updateCurrentWebDavCredentials,
 } from '../session-store'
+import { probeDriveConnection } from '../webdav'
 
 type CookieUpdateRequest = {
   cookie?: string
@@ -76,6 +77,11 @@ export async function handleSessionApiRequest(request: Request, env: Env): Promi
     const restored = await rehydrateCurrentSessionFromPersistence(origin, env)
     const persistedSessions = restored ? [] : await listPersistedQuarkSessions(env)
     await ensureWebDavCredentialsForCurrentSession(env)
+    const sessionStatus = getSessionStatus(origin)
+    if (sessionStatus.loggedIn && sessionStatus.accountKey) {
+      await probeDriveConnection(sessionStatus.accountKey, env)
+    }
+
     return jsonOk({
       ...getSessionStatus(origin),
       restorableSessions: persistedSessions,
