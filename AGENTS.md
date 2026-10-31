@@ -99,3 +99,17 @@ pnpm cf-typegen
 - 进入 Worker 运行时、路由、会话、WebDAV 细节时，继续看 `worker/AGENTS.md`。
 - 进入夸克 API 封装、路径缓存、下载链接缓存、cookie 合并等上游桥接细节时，继续看 `worker/quark/AGENTS.md`。
 - 子文档只补充本目录增量规则，不重复这里的全局信息。
+
+## Agent skills
+
+### Issue tracker
+
+Issues 跟踪在本仓库的 GitHub Issues（`rain0002009/webdav`，使用 `gh` CLI 操作）。See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+使用默认五标签：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+single-context：根目录 `CONTEXT.md` + `docs/adr/`。See `docs/agents/domain.md`.

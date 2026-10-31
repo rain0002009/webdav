@@ -44,6 +44,7 @@
 
 - 改 `webdav.ts` 鉴权流程时，同时检查 Basic Auth、KV 查凭据、持久化 Quark session 三段链路。
 - 改 `session-store.ts` 持久化键或 accountKey 算法时，必须检查历史 KV 数据兼容性。
+- 改 `webdav-auth.ts` 或 API 错误响应时，不要把 `WWW-Authenticate` 挑战头带进 `/api/*` 的 401 响应——会触发浏览器 Basic 弹窗；挑战头只属于 `/dav` 的客户端通道。
 - 改 `http.ts` envelope 结构时，要同步检查 `src/App.tsx` 的 `fetchJson()` 兼容性。
 - 改 `/api/session/status` 或 WebDAV endpoint 输出时，前端状态页显示会立刻受影响。
 

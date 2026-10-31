@@ -1,21 +1,12 @@
-import { constantTimeEquals } from './auth'
 import { QuarkAdapter } from './quark/adapter'
 import { QuarkApiError, type QuarkEntry } from './quark/types'
 import {
   getPersistedQuarkSessionByAccountKey,
-  getWebDavCredentialsByUsername,
   mergeCookieString,
+  saveQuarkSessionForAccount,
   setDriveConnectionState,
-  syncPersistedCookieForAccount,
 } from './session-store'
-
-type PersistedAccountSession = NonNullable<Awaited<ReturnType<typeof getPersistedQuarkSessionByAccountKey>>>
-
-type AccountAdapterContext = {
-  adapter: QuarkAdapter
-  persistedSession: PersistedAccountSession
-  accountCookie: () => string
-}
+import { authenticateWebDavRequest, createWebDavAuthChallengeResponse } from './webdav-auth'
 
 const DAV_HEADERS = {
   DAV: '1',
@@ -35,42 +26,53 @@ const READ_ONLY_DAV_METHODS = new Set([
 export async function handleWebDavRequest(request: Request, env: Env): Promise<Response> {
   try {
     const url = new URL(request.url)
-    const auth = parseBasicAuth(request)
+    const auth = await authenticateWebDavRequest(request, env, { requireApproved: true })
     if (!auth.ok) {
-      return new Response(auth.message, {
-        status: 401,
-        headers: {
-          ...DAV_HEADERS,
-          'content-type': 'text/plain; charset=utf-8',
-          'www-authenticate': 'Basic realm="Quark WebDAV"',
-        },
+      if (auth.response.status === 403) {
+        return new Response(await auth.response.text(), {
+          status: 403,
+          headers: {
+            ...DAV_HEADERS,
+            'content-type': 'text/plain; charset=utf-8',
+          },
+        })
+      }
+
+      return createWebDavAuthChallengeResponse(await auth.response.text(), {
+        status: auth.response.status,
+        headers: DAV_HEADERS,
       })
     }
 
-    const credentials = await getWebDavCredentialsByUsername(auth.username, env)
-    if (!credentials || !constantTimeEquals(auth.password, credentials.password)) {
-      return new Response('Invalid WebDAV username or password.', {
+    const credentials = auth.credentials
+
+    const persistedSession = await getPersistedQuarkSessionByAccountKey(credentials.accountKey, env)
+    if (!persistedSession?.cookie) {
+      return createWebDavAuthChallengeResponse('No bound Quark session is available for this WebDAV account.', {
         status: 401,
-        headers: {
-          ...DAV_HEADERS,
-          'content-type': 'text/plain; charset=utf-8',
-          'www-authenticate': 'Basic realm="Quark WebDAV"',
-        },
+        headers: DAV_HEADERS,
       })
     }
 
-    const accountContext = await createAccountAdapterContext(credentials.accountKey, env)
-    if (!accountContext) {
-      return new Response('No bound Quark session is available for this WebDAV account.', {
-        status: 401,
-        headers: {
-          ...DAV_HEADERS,
-          'content-type': 'text/plain; charset=utf-8',
-          'www-authenticate': 'Basic realm="Quark WebDAV"',
+    let accountCookie = persistedSession.cookie
+
+    const adapter = new QuarkAdapter(accountCookie, async (cookieUpdates) => {
+      const mergedCookie = mergeCookieString(accountCookie, cookieUpdates)
+      if (!mergedCookie) {
+        return
+      }
+
+      accountCookie = mergedCookie
+      await saveQuarkSessionForAccount(
+        credentials.accountKey,
+        mergedCookie,
+        {
+          user: persistedSession.user,
+          expiresAt: persistedSession.expiresAt,
         },
-      })
-    }
-    const { adapter, persistedSession } = accountContext
+        env,
+      )
+    })
 
     if (request.method === 'OPTIONS') {
       return new Response(null, {
@@ -80,11 +82,11 @@ export async function handleWebDavRequest(request: Request, env: Env): Promise<R
     }
 
     if (request.method === 'PROPFIND') {
-      return handlePropfind(adapter, url, request)
+      return handlePropfind(adapter, url, request, credentials.accountKey)
     }
 
     if (request.method === 'GET' || request.method === 'HEAD') {
-      return handleGet(adapter, url, request, accountContext.accountCookie(), persistedSession.user)
+      return handleGet(adapter, url, request, accountCookie, credentials.accountKey, persistedSession.user)
     }
 
     if (request.method === 'MKCOL') {
@@ -135,30 +137,12 @@ export async function handleWebDavRequest(request: Request, env: Env): Promise<R
   }
 }
 
-export async function probeDriveConnection(accountKey: string, env: Env): Promise<void> {
-  const accountContext = await createAccountAdapterContext(accountKey, env)
-  if (!accountContext) {
-    setDriveConnectionState({
-      driveReady: false,
-      driveStatus: '当前 WebDAV 账户未绑定可用的夸克会话。',
-      error: 'missing-quark-session',
-    })
-    return
-  }
-
-  try {
-    await accountContext.adapter.listPath('/')
-    setDriveConnectionState({
-      driveReady: true,
-      driveStatus: '夸克网盘连接正常。',
-      error: undefined,
-    })
-  } catch (error) {
-    handleDriveConnectionError(error)
-  }
-}
-
-async function handlePropfind(adapter: QuarkAdapter, url: URL, request: Request): Promise<Response> {
+async function handlePropfind(
+  adapter: QuarkAdapter,
+  url: URL,
+  request: Request,
+  accountKey: string,
+): Promise<Response> {
   const pathname = normalizeDavPath(url.pathname)
   const depth = request.headers.get('depth') ?? '0'
 
@@ -169,9 +153,9 @@ async function handlePropfind(adapter: QuarkAdapter, url: URL, request: Request)
       return notFoundResponse('Requested DAV resource was not found in Quark.')
     }
 
-    setDriveConnectionState({
+    setDriveConnectionState(accountKey, {
       driveReady: true,
-      driveStatus: '夸克网盘连接正常。',
+      driveStatus: 'Quark upstream read bridge is connected.',
     })
 
     const responses = [createPropfindResponse(pathname, target.entry)]
@@ -194,7 +178,7 @@ ${responses.join('\n')}
       },
     })
   } catch (error) {
-    return handleQuarkError(error)
+    return handleQuarkError(error, accountKey)
   }
 }
 
@@ -203,6 +187,7 @@ async function handleGet(
   url: URL,
   request: Request,
   accountCookie: string,
+  accountKey: string,
   user?: string,
 ): Promise<Response> {
   const pathname = normalizeDavPath(url.pathname)
@@ -213,9 +198,9 @@ async function handleGet(
       return notFoundResponse('Requested DAV resource was not found in Quark.')
     }
 
-    setDriveConnectionState({
+    setDriveConnectionState(accountKey, {
       driveReady: true,
-      driveStatus: '夸克网盘连接正常。',
+      driveStatus: 'Quark upstream read bridge is connected.',
     })
 
     if (target.entry.isDirectory) {
@@ -265,9 +250,9 @@ async function handleGet(
     }
 
     if (!upstreamResponse.ok) {
-      setDriveConnectionState({
+      setDriveConnectionState(accountKey, {
         driveReady: false,
-        driveStatus: '夸克网盘文件读取失败。',
+        driveStatus: 'Quark upstream returned an error while streaming file content.',
         error: `upstream-download-${upstreamResponse.status}`,
       })
 
@@ -293,7 +278,7 @@ async function handleGet(
       },
     })
   } catch (error) {
-    return handleQuarkError(error)
+    return handleQuarkError(error, accountKey)
   }
 }
 
@@ -382,12 +367,20 @@ async function handleMove(adapter: QuarkAdapter, request: Request, url: URL): Pr
 }
 
 function normalizeDavPath(pathname: string): string {
-  const value = pathname.replace(/^\/dav/, '')
-  return value === '' ? '/' : value
+  const value = pathname.replace(/^\/dav(?:\/|$)/, '/').replace(/\/+/g, '/')
+  if (value === '' || value === '/') {
+    return '/'
+  }
+
+  return value.endsWith('/') ? value.slice(0, -1) : value
 }
 
 function createPropfindResponse(pathname: string, entry: QuarkEntry): string {
-  const href = pathname === '/' ? '/dav/' : `/dav${pathname}${entry.isDirectory && !pathname.endsWith('/') ? '/' : ''}`
+  const normalizedPath = normalizeDavPath(pathname)
+  const href =
+    normalizedPath === '/'
+      ? '/dav/'
+      : `/dav${normalizedPath}${entry.isDirectory && !normalizedPath.endsWith('/') ? '/' : ''}`
   const resourceType = entry.isDirectory ? '<D:collection/>' : ''
   const contentLength = entry.isDirectory ? '' : `<D:getcontentlength>${String(entry.size)}</D:getcontentlength>`
 
@@ -407,11 +400,14 @@ function createPropfindResponse(pathname: string, entry: QuarkEntry): string {
 }
 
 function joinDavPath(parentPath: string, childName: string): string {
-  if (parentPath === '/') {
-    return `/${childName}`
+  const normalizedParentPath = normalizeDavPath(parentPath)
+  const normalizedChildName = childName.replace(/^\/+/, '')
+
+  if (normalizedParentPath === '/') {
+    return normalizeDavPath(`/${normalizedChildName}`)
   }
 
-  return `${parentPath}/${childName}`
+  return normalizeDavPath(`${normalizedParentPath}/${normalizedChildName}`)
 }
 
 function notFoundResponse(message: string): Response {
@@ -424,58 +420,13 @@ function notFoundResponse(message: string): Response {
   })
 }
 
-async function createAccountAdapterContext(accountKey: string, env: Env): Promise<AccountAdapterContext | null> {
-  const persistedSession = await getPersistedQuarkSessionByAccountKey(accountKey, env)
-  if (!persistedSession?.cookie) {
-    return null
-  }
-
-  let accountCookie = persistedSession.cookie
-  const adapter = new QuarkAdapter(accountCookie, async (cookieUpdates) => {
-    const mergedCookie = mergeCookieString(accountCookie, cookieUpdates)
-    if (!mergedCookie) {
-      return
-    }
-
-    accountCookie = mergedCookie
-    await syncPersistedCookieForAccount(
-      accountKey,
-      mergedCookie,
-      {
-        user: persistedSession.user,
-        expiresAt: persistedSession.expiresAt,
-      },
-      env,
-    )
-  })
-
-  return {
-    adapter,
-    persistedSession,
-    accountCookie: () => accountCookie,
-  }
-}
-
-function handleDriveConnectionError(error: unknown): void {
+function handleQuarkError(error: unknown, accountKey: string): Response {
   if (error instanceof QuarkApiError) {
-    setDriveConnectionState({
+    setDriveConnectionState(accountKey, {
       driveReady: false,
-      driveStatus: '夸克网盘当前不可用。',
+      driveStatus: 'Quark upstream bridge is unavailable.',
       error: error.message,
     })
-    return
-  }
-
-  setDriveConnectionState({
-    driveReady: false,
-    driveStatus: '夸克网盘探测失败，请稍后重试。',
-    error: error instanceof Error ? error.message : 'unknown-upstream-error',
-  })
-}
-
-function handleQuarkError(error: unknown): Response {
-  if (error instanceof QuarkApiError) {
-    handleDriveConnectionError(error)
 
     const status = error.status >= 400 && error.status < 500 ? 502 : 502
     return new Response(error.message, {
@@ -497,7 +448,11 @@ function handleQuarkError(error: unknown): Response {
     })
   }
 
-  handleDriveConnectionError(error)
+  setDriveConnectionState(accountKey, {
+    driveReady: false,
+    driveStatus: 'Quark upstream bridge failed unexpectedly.',
+    error: error instanceof Error ? error.message : 'unknown-upstream-error',
+  })
 
   return new Response(error instanceof Error ? error.message : 'Unexpected Quark upstream error.', {
     status: 502,
@@ -596,42 +551,6 @@ function createDownloadHeaders(cookie: string, request: Request): HeadersInit {
 
 function isExpiredDownloadResponse(status: number): boolean {
   return status === 401 || status === 403 || status === 404
-}
-
-function parseBasicAuth(
-  request: Request,
-): { ok: true; username: string; password: string } | { ok: false; message: string } {
-  const authorization = request.headers.get('authorization')
-  if (!authorization?.startsWith('Basic ')) {
-    return {
-      ok: false,
-      message: 'Missing WebDAV Basic Auth credentials.',
-    }
-  }
-
-  const encoded = authorization.slice('Basic '.length).trim()
-  let decoded: string
-  try {
-    decoded = atob(encoded)
-  } catch {
-    return {
-      ok: false,
-      message: 'Malformed WebDAV Basic Auth header.',
-    }
-  }
-
-  const separatorIndex = decoded.indexOf(':')
-  if (separatorIndex < 0) {
-    return {
-      ok: false,
-      message: 'Malformed WebDAV Basic Auth payload.',
-    }
-  }
-
-  const username = decoded.slice(0, separatorIndex)
-  const password = decoded.slice(separatorIndex + 1)
-
-  return { ok: true, username, password }
 }
 
 function toHttpDate(value?: string): string {

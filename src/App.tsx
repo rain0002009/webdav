@@ -3,6 +3,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import './App.css'
 
 const LOCAL_CREDENTIALS_KEY = 'quark-webdav-credentials'
+const UNSAFE_WEBDAV_PASSWORD_CHARS = /[%@:/]/
 
 type ApiEnvelope<T> = {
   ok?: boolean
@@ -15,6 +16,7 @@ type ApiEnvelope<T> = {
 type SessionStatus = {
   loggedIn: boolean
   accountKey?: string
+  accountStatus?: string
   user?: string
   expiresAt?: string
   endpoint?: string
@@ -22,13 +24,6 @@ type SessionStatus = {
   driveReady?: boolean
   driveStatus?: string
   error?: string
-  restorableSessions?: Array<{
-    accountKey: string
-    user?: string
-    expiresAt?: string
-    updatedAt: string
-  }>
-  requiresAccountSelection?: boolean
   webdavCredentials?: {
     username: string
     password: string
@@ -52,6 +47,11 @@ type QrStatusResponse = {
   loggedIn?: boolean
   message?: string
   error?: string
+  accountStatus?: string
+  webdavCredentials?: {
+    username: string
+    password: string
+  }
 }
 
 type CookieUpdateRequest = {
@@ -61,6 +61,11 @@ type CookieUpdateRequest = {
 type CookieUpdateResponse = {
   updated: boolean
   message?: string
+  accountStatus?: string
+  webdavCredentials?: {
+    username: string
+    password: string
+  }
 }
 
 type WebDavCredentialsResponse = {
@@ -70,24 +75,22 @@ type WebDavCredentialsResponse = {
   }
 }
 
-type RestoreSessionResponse = SessionStatus
-type WebDavLoginResponse = SessionStatus
+type LocalWebDavCredentials = {
+  username: string
+  password: string
+}
 
-function readLocalCredentials(): { username: string; password: string } {
-  try {
-    const raw = window.localStorage.getItem(LOCAL_CREDENTIALS_KEY)
-    if (!raw) {
-      return { username: '', password: '' }
-    }
+type InitialCredentialState = LocalWebDavCredentials & {
+  hasCache: boolean
+}
 
-    const cached = JSON.parse(raw) as { username?: string; password?: string }
-    return {
-      username: typeof cached.username === 'string' ? cached.username : '',
-      password: typeof cached.password === 'string' ? cached.password : '',
-    }
-  } catch {
-    window.localStorage.removeItem(LOCAL_CREDENTIALS_KEY)
-    return { username: '', password: '' }
+class ApiError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
   }
 }
 
@@ -118,7 +121,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
       envelope?.error ??
       envelope?.message ??
       `Request failed (${response.status})`
-    throw new Error(message)
+    throw new ApiError(message, response.status)
   }
 
   if (hasData) {
@@ -128,8 +131,75 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return payload as T
 }
 
+function getCachedLocalWebDavCredentials(): LocalWebDavCredentials | null {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_CREDENTIALS_KEY)
+    if (!raw) {
+      return null
+    }
+
+    const cached = JSON.parse(raw) as { username?: string; password?: string }
+    if (
+      typeof cached.username !== 'string' ||
+      cached.username.length === 0 ||
+      typeof cached.password !== 'string' ||
+      cached.password.length === 0
+    ) {
+      return null
+    }
+
+    return {
+      username: cached.username,
+      password: cached.password,
+    }
+  } catch {
+    window.localStorage.removeItem(LOCAL_CREDENTIALS_KEY)
+    return null
+  }
+}
+
+function createBasicAuthorizationHeader(username: string, password: string): string {
+  return `Basic ${btoa(`${username}:${password}`)}`
+}
+
+function getStoredAuthHeaders(): Record<string, string> | undefined {
+  const cached = getCachedLocalWebDavCredentials()
+  return cached
+    ? { authorization: createBasicAuthorizationHeader(cached.username, cached.password) }
+    : undefined
+}
+
+function getInitialCredentialState(): InitialCredentialState {
+  const cached = getCachedLocalWebDavCredentials()
+  if (!cached) {
+    return {
+      username: '',
+      password: '',
+      hasCache: false,
+    }
+  }
+
+  return {
+    username: cached.username,
+    password: cached.password,
+    hasCache: true,
+  }
+}
+
+function persistLocalWebDavCredentials(credentials: LocalWebDavCredentials): void {
+  window.localStorage.setItem(LOCAL_CREDENTIALS_KEY, JSON.stringify(credentials))
+}
+
 function App() {
-  const initialLocalCredentials = readLocalCredentials()
+  if (window.location.pathname === '/admin') {
+    return <AdminPanel />
+  }
+
+  return <Console />
+}
+
+function Console() {
+  const initialCredentialState = useMemo(() => getInitialCredentialState(), [])
   const [session, setSession] = useState<SessionStatus | null>(null)
   const [cookieInput, setCookieInput] = useState('')
   const [qrState, setQrState] = useState<QrStartResponse | null>(null)
@@ -140,45 +210,55 @@ function App() {
   const [pollingQr, setPollingQr] = useState(false)
   const [savingCookie, setSavingCookie] = useState(false)
   const [savingWebDavCredentials, setSavingWebDavCredentials] = useState(false)
-  const [restoringSession, setRestoringSession] = useState(false)
   const [clearingSession, setClearingSession] = useState(false)
-  const [webdavUsernameInput, setWebdavUsernameInput] = useState(initialLocalCredentials.username)
-  const [webdavPasswordInput, setWebdavPasswordInput] = useState(initialLocalCredentials.password)
+  const [webdavUsernameInput, setWebdavUsernameInput] = useState(initialCredentialState.username)
+  const [webdavPasswordInput, setWebdavPasswordInput] = useState(initialCredentialState.password)
+  const [hasLocalCredentialsCache, setHasLocalCredentialsCache] = useState(initialCredentialState.hasCache)
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [infoMessage, setInfoMessage] = useState<string | null>(null)
   const qrPollingInFlightRef = useRef(false)
 
-  const webdavEndpoint = useMemo(() => {
-    if (session?.endpoint) {
-      return session.endpoint
+  const handleAuthFailure = useCallback((error: unknown, fallback: string) => {
+    if (error instanceof ApiError && error.status === 401) {
+      window.localStorage.removeItem(LOCAL_CREDENTIALS_KEY)
+      setHasLocalCredentialsCache(false)
+      setWebdavUsernameInput('')
+      setWebdavPasswordInput('')
+      setSession(null)
+      setErrorMessage('登录凭据已失效，本地缓存已清除，请重新扫码或粘贴 Cookie 登录。')
+      return
     }
-    return `${window.location.origin}/dav`
-  }, [session?.endpoint])
+    setErrorMessage(error instanceof Error ? error.message : fallback)
+  }, [])
+
+  const webdavEndpoint = session?.endpoint ?? `${window.location.origin}/dav`
 
   const loadSession = useCallback(async () => {
     setLoadingSession(true)
     setErrorMessage(null)
     try {
-      const nextSession = await fetchJson<SessionStatus>('/api/session/status')
+      const cachedCredentials = getCachedLocalWebDavCredentials()
+      const nextSession = await fetchJson<SessionStatus>('/api/session/status', {
+        headers: cachedCredentials
+          ? {
+              authorization: createBasicAuthorizationHeader(cachedCredentials.username, cachedCredentials.password),
+            }
+          : undefined,
+      })
       setSession(nextSession)
-      setWebdavUsernameInput(nextSession.webdavCredentials?.username ?? '')
-      setWebdavPasswordInput(nextSession.webdavCredentials?.password ?? '')
+      setWebdavUsernameInput(nextSession.webdavCredentials?.username ?? cachedCredentials?.username ?? '')
+      setWebdavPasswordInput(nextSession.webdavCredentials?.password ?? cachedCredentials?.password ?? '')
       if (nextSession.webdavCredentials?.username && nextSession.webdavCredentials?.password) {
-        window.localStorage.setItem(
-          LOCAL_CREDENTIALS_KEY,
-          JSON.stringify({
-            username: nextSession.webdavCredentials.username,
-            password: nextSession.webdavCredentials.password,
-          }),
-        )
+        persistLocalWebDavCredentials(nextSession.webdavCredentials)
+        setHasLocalCredentialsCache(true)
       }
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to load status')
+      handleAuthFailure(error, 'Failed to load status')
     } finally {
       setLoadingSession(false)
     }
-  }, [])
+  }, [handleAuthFailure])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -236,6 +316,10 @@ function App() {
       setQrStatus(nextQrStatus)
       if (nextQrStatus.loggedIn) {
         setInfoMessage(nextQrStatus.message ?? 'Login confirmed.')
+        if (nextQrStatus.webdavCredentials) {
+          persistLocalWebDavCredentials(nextQrStatus.webdavCredentials)
+          setHasLocalCredentialsCache(true)
+        }
         await loadSession()
       } else if (!options?.silent) {
         setInfoMessage(nextQrStatus.message ?? 'QR status refreshed.')
@@ -289,6 +373,10 @@ function App() {
 
       if (response.updated) {
         setInfoMessage(response.message ?? 'Cookie session saved successfully.')
+        if (response.webdavCredentials) {
+          persistLocalWebDavCredentials(response.webdavCredentials)
+          setHasLocalCredentialsCache(true)
+        }
         await loadSession()
       } else {
         setErrorMessage(response.message ?? 'Cookie was not accepted.')
@@ -307,21 +395,21 @@ function App() {
     try {
       await fetchJson<{ cleared?: boolean; message?: string }>('/api/session/logout', {
         method: 'POST',
+        headers: getStoredAuthHeaders(),
       })
       setQrState(null)
       setQrStatus(null)
       setCookieInput('')
-      setWebdavUsernameInput('')
-      setWebdavPasswordInput('')
       window.localStorage.removeItem(LOCAL_CREDENTIALS_KEY)
+      setHasLocalCredentialsCache(false)
       setInfoMessage('Session cleared.')
       await loadSession()
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Failed to clear session')
+      handleAuthFailure(error, 'Failed to clear session')
     } finally {
       setClearingSession(false)
     }
-  }, [loadSession])
+  }, [handleAuthFailure, loadSession])
 
   const onSaveWebDavCredentials = useCallback(async () => {
     const username = webdavUsernameInput.trim()
@@ -336,84 +424,35 @@ function App() {
       return
     }
 
+    if (UNSAFE_WEBDAV_PASSWORD_CHARS.test(password)) {
+      setErrorMessage('WebDAV 密码不能包含 %, @, :, /，否则某些客户端可能出现 URI malformed。')
+      return
+    }
+
     setSavingWebDavCredentials(true)
     setErrorMessage(null)
     setInfoMessage(null)
     try {
       const response = await fetchJson<WebDavCredentialsResponse>('/api/session/webdav-credentials', {
         method: 'POST',
+        headers: getStoredAuthHeaders(),
         body: JSON.stringify({ username, password }),
       })
       setWebdavUsernameInput(response.credentials.username)
       setWebdavPasswordInput(response.credentials.password)
-      window.localStorage.setItem(
-        LOCAL_CREDENTIALS_KEY,
-        JSON.stringify({
-          username: response.credentials.username,
-          password: response.credentials.password,
-        }),
-      )
+      persistLocalWebDavCredentials(response.credentials)
+      setHasLocalCredentialsCache(true)
       setInfoMessage('WebDAV 用户名和密码已更新。')
       await loadSession()
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '更新 WebDAV 凭据失败')
+      handleAuthFailure(error, '更新 WebDAV 凭据失败')
     } finally {
       setSavingWebDavCredentials(false)
     }
-  }, [loadSession, webdavPasswordInput, webdavUsernameInput])
-
-  const onLoginWithWebDavCredentials = useCallback(async () => {
-    const username = webdavUsernameInput.trim()
-    const password = webdavPasswordInput.trim()
-    if (!username) {
-      setErrorMessage('WebDAV 用户名不能为空。')
-      return
-    }
-
-    if (!password) {
-      setErrorMessage('WebDAV 密码不能为空。')
-      return
-    }
-
-    setRestoringSession(true)
-    setErrorMessage(null)
-    setInfoMessage(null)
-    try {
-      const restoredSession = await fetchJson<WebDavLoginResponse>('/api/session/login', {
-        method: 'POST',
-        body: JSON.stringify({ username, password }),
-      })
-      setSession(restoredSession)
-      setWebdavUsernameInput(restoredSession.webdavCredentials?.username ?? username)
-      setWebdavPasswordInput(restoredSession.webdavCredentials?.password ?? password)
-      setInfoMessage('已通过 WebDAV 用户名和密码恢复夸克会话。')
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'WebDAV 登录失败')
-    } finally {
-      setRestoringSession(false)
-    }
-  }, [webdavPasswordInput, webdavUsernameInput])
-
-  const onRestoreSession = useCallback(async (accountKey: string) => {
-    setRestoringSession(true)
-    setErrorMessage(null)
-    setInfoMessage(null)
-    try {
-      const restoredSession = await fetchJson<RestoreSessionResponse>('/api/session/restore', {
-        method: 'POST',
-        body: JSON.stringify({ accountKey }),
-      })
-      setSession(restoredSession)
-      setInfoMessage('已恢复所选夸克会话。')
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : '恢复会话失败')
-    } finally {
-      setRestoringSession(false)
-    }
-  }, [])
+  }, [handleAuthFailure, loadSession, webdavPasswordInput, webdavUsernameInput])
 
   const isBusy =
-    loadingSession || startingQr || pollingQr || savingCookie || savingWebDavCredentials || restoringSession || clearingSession
+    loadingSession || startingQr || pollingQr || savingCookie || savingWebDavCredentials || clearingSession
 
   const qrRequestId = qrStatus?.requestId ?? qrState?.requestId
   const qrUrl = qrStatus?.qrUrl ?? qrState?.qrUrl
@@ -431,6 +470,10 @@ function App() {
         <h1>夸克网盘 WebDAV 控制台</h1>
         <p className="panel__subtitle">用于管理 Worker 桥接会话与登录状态</p>
       </header>
+
+      <div className="notice notice--warning">
+        ⚠️ 重要：登录后你的网盘根目录会生成 <code>dav-id.txt</code>（身份文件），它就是你的 WebDAV 登录凭证。请勿分享、转存、修改或删除该文件，否则账户可能被他人接管，或需要重新注册并等待审核。
+      </div>
 
       {errorMessage ? (
         <div className="notice notice--error" role="alert">
@@ -459,14 +502,26 @@ function App() {
             <dd>{session?.loggedIn ? '已登录' : '未登录'}</dd>
           </div>
           <div>
-            <dt>网盘状态</dt>
-            <dd>{session?.driveStatus ?? '-'}</dd>
+            <dt>账户状态</dt>
+            <dd>{accountStatusLabel(session?.accountStatus)}</dd>
+          </div>
+          <div>
+            <dt>夸克昵称</dt>
+            <dd>{session?.user ?? '-'}</dd>
+          </div>
+          <div>
+            <dt>会话过期时间</dt>
+            <dd>{session?.expiresAt ?? '-'}</dd>
           </div>
           <div>
             <dt>网盘错误</dt>
             <dd>{session?.error ?? '-'}</dd>
           </div>
         </dl>
+        <p className="card__footnote">
+          使用方式：在 WebDAV 客户端把上方地址作为“服务器地址”；用户名和密码请填写在客户端的认证字段中，不要写成
+          <code>https://user:pass@host/dav</code> 这类 URL。
+        </p>
       </section>
 
       <section className="card">
@@ -482,6 +537,16 @@ function App() {
             <p className="card__footnote">
               当前登录的夸克账户会自动绑定一组 WebDAV 用户名和密码。这里显示的是当前有效凭据，你可以直接修改并保存。
             </p>
+            {session?.accountStatus === 'pending' ? (
+              <div className="notice notice--warning">
+                当前账户处于待审核状态：凭据已生成但尚未激活，WebDAV 客户端连接会被拒绝，直到管理员审核通过。
+              </div>
+            ) : null}
+            {session?.accountStatus === 'rejected' ? (
+              <div className="notice notice--error">
+                当前账户已被拒绝：WebDAV 访问已停用。如有疑问请联系管理员。
+              </div>
+            ) : null}
             <div className="credentials-grid">
               <label className="field credentials-grid__field" htmlFor="webdav-username-input">
                 <span>WebDAV 用户名</span>
@@ -505,6 +570,22 @@ function App() {
               </label>
             </div>
           </>
+        ) : hasLocalCredentialsCache ? (
+          <>
+            <p className="card__footnote">
+              这里显示的是当前浏览器本地缓存的上一组 WebDAV 凭据，方便你刷新页面后继续查看。真正使用前，仍需要先恢复对应的夸克登录状态。
+            </p>
+            <div className="credentials-grid credentials-grid--readonly">
+              <label className="field credentials-grid__field" htmlFor="webdav-username-input">
+                <span>本地缓存的 WebDAV 用户名</span>
+                <input id="webdav-username-input" type="text" value={webdavUsernameInput} disabled />
+              </label>
+              <label className="field credentials-grid__field" htmlFor="webdav-password-input">
+                <span>本地缓存的 WebDAV 密码</span>
+                <input id="webdav-password-input" type="text" value={webdavPasswordInput} disabled />
+              </label>
+            </div>
+          </>
         ) : (
           <p className="card__footnote">请先完成夸克登录。登录成功后，系统会自动为当前夸克账户生成一组 WebDAV 用户名和密码。</p>
         )}
@@ -512,70 +593,6 @@ function App() {
 
       {!session?.loggedIn ? (
         <>
-          <section className="card">
-            <div className="card__header">
-              <h2>WebDAV 用户名密码登录</h2>
-              <button className="button" onClick={() => void onLoginWithWebDavCredentials()} disabled={isBusy}>
-                {restoringSession ? '登录中...' : '登录并恢复会话'}
-              </button>
-            </div>
-            <p className="card__footnote">
-              如果你已经有这套 WebDAV 用户名和密码，可以像传统网页登录一样直接输入。系统会校验这组凭据，并恢复它当前绑定的夸克会话。
-            </p>
-            <div className="credentials-grid">
-              <label className="field credentials-grid__field" htmlFor="webdav-login-username-input">
-                <span>WebDAV 用户名</span>
-                <input
-                  id="webdav-login-username-input"
-                  type="text"
-                  value={webdavUsernameInput}
-                  onChange={(event) => setWebdavUsernameInput(event.target.value)}
-                  disabled={isBusy}
-                />
-              </label>
-              <label className="field credentials-grid__field" htmlFor="webdav-login-password-input">
-                <span>WebDAV 密码</span>
-                <input
-                  id="webdav-login-password-input"
-                  type="password"
-                  value={webdavPasswordInput}
-                  onChange={(event) => setWebdavPasswordInput(event.target.value)}
-                  disabled={isBusy}
-                />
-              </label>
-            </div>
-          </section>
-
-          {session?.restorableSessions?.length ? (
-            <section className="card">
-              <div className="card__header">
-                <h2>{session.requiresAccountSelection ? '选择要恢复的夸克会话' : '可恢复的夸克会话'}</h2>
-              </div>
-              <p className="card__footnote">
-                {session.requiresAccountSelection
-                  ? '检测到多条持久化会话。为了避免把 WebDAV 凭据绑定到错误账户，系统不会自动恢复，请手动选择。'
-                  : '检测到一条可恢复的持久化会话。你可以手动恢复后再使用当前账户的 WebDAV 凭据。'}
-              </p>
-              <div className="credentials-grid credentials-grid--readonly">
-                {session.restorableSessions.map((persistedSession) => (
-                  <div key={persistedSession.accountKey} className="field credentials-grid__field">
-                    <span>{persistedSession.user ?? persistedSession.accountKey}</span>
-                    <input type="text" value={persistedSession.accountKey} disabled />
-                    <small>最近更新：{persistedSession.updatedAt}</small>
-                    <button
-                      className="button"
-                      type="button"
-                      onClick={() => void onRestoreSession(persistedSession.accountKey)}
-                      disabled={isBusy}
-                    >
-                      {restoringSession ? '恢复中...' : '恢复此会话'}
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-
           <section className="card">
             <div className="card__header">
               <h2>二维码登录</h2>
@@ -700,6 +717,218 @@ function App() {
           </button>
         </div>
         <p>会清空 Worker 当前认证/会话状态，清理后需要重新登录。</p>
+      </section>
+    </main>
+  )
+}
+
+type AdminAccountView = {
+  accountKey: string
+  nickname?: string
+  userId?: string
+  status: 'pending' | 'approved' | 'rejected'
+  registeredAt: string
+  lastLoginAt: string
+  username?: string
+}
+
+function accountStatusLabel(status?: string): string {
+  switch (status) {
+    case 'approved':
+      return '已批准'
+    case 'pending':
+      return '待审核'
+    case 'rejected':
+      return '已拒绝'
+    case 'unregistered':
+      return '未注册'
+    default:
+      return '-'
+  }
+}
+
+function AdminPanel() {
+  const adminToken = useMemo(
+    () => new URLSearchParams(window.location.search).get('token') ?? '',
+    [],
+  )
+  const [accounts, setAccounts] = useState<AdminAccountView[]>([])
+  const [loadingAccounts, setLoadingAccounts] = useState(false)
+  const [mutating, setMutating] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [infoMessage, setInfoMessage] = useState<string | null>(null)
+
+  const adminFetch = useCallback(
+    async <T,>(url: string, init?: RequestInit): Promise<T> => {
+      return fetchJson<T>(url, {
+        ...init,
+        headers: {
+          'x-admin-token': adminToken,
+          ...(init?.headers ?? {}),
+        },
+      })
+    },
+    [adminToken],
+  )
+
+  const loadAccounts = useCallback(async () => {
+    if (!adminToken) {
+      setErrorMessage('缺少管理令牌：请通过 /admin?token=... 访问本页面。')
+      return
+    }
+
+    setLoadingAccounts(true)
+    setErrorMessage(null)
+    try {
+      const data = await adminFetch<{ accounts: AdminAccountView[] }>('/api/admin/accounts')
+      setAccounts(data.accounts ?? [])
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '加载账户列表失败')
+    } finally {
+      setLoadingAccounts(false)
+    }
+  }, [adminFetch, adminToken])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadAccounts()
+    }, 0)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [loadAccounts])
+
+  const onUpdateStatus = useCallback(
+    async (accountKey: string, status: 'approved' | 'rejected') => {
+      setMutating(true)
+      setErrorMessage(null)
+      setInfoMessage(null)
+      try {
+        await adminFetch(`/api/admin/accounts/${encodeURIComponent(accountKey)}/status`, {
+          method: 'POST',
+          body: JSON.stringify({ status }),
+        })
+        setInfoMessage(`账户 ${accountKey} 已更新为「${accountStatusLabel(status)}」。`)
+        await loadAccounts()
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : '更新账户状态失败')
+      } finally {
+        setMutating(false)
+      }
+    },
+    [adminFetch, loadAccounts],
+  )
+
+  const onDeleteAccount = useCallback(
+    async (accountKey: string) => {
+      if (!window.confirm(`确定删除账户 ${accountKey}？其 WebDAV 凭据、会话与身份映射都会被清除。`)) {
+        return
+      }
+
+      setMutating(true)
+      setErrorMessage(null)
+      setInfoMessage(null)
+      try {
+        const result = await adminFetch<{ identityFileRemoved?: boolean }>(
+          `/api/admin/accounts/${encodeURIComponent(accountKey)}`,
+          { method: 'DELETE' },
+        )
+        setInfoMessage(
+          `账户 ${accountKey} 已删除。身份文件清理：${
+            result.identityFileRemoved
+              ? '已从网盘根目录删除'
+              : '未执行（文件已不存在或 Cookie 已失效），如有残留请自行删除网盘根目录的 dav-id.txt'
+          }。`,
+        )
+        await loadAccounts()
+      } catch (error) {
+        setErrorMessage(error instanceof Error ? error.message : '删除账户失败')
+      } finally {
+        setMutating(false)
+      }
+    },
+    [adminFetch, loadAccounts],
+  )
+
+  return (
+    <main className="panel">
+      <header className="panel__header">
+        <h1>账户审核与管理</h1>
+        <p className="panel__subtitle">管理 WebDAV 账户的准入：批准、拒绝或删除</p>
+      </header>
+
+      <div className="notice notice--warning">
+        本页面受 TOKEN 保护，但令牌会出现在地址栏中。请勿把带 token 的链接转发给他人，使用后建议清理浏览器历史。
+      </div>
+
+      {errorMessage ? (
+        <div className="notice notice--error" role="alert">
+          {errorMessage}
+        </div>
+      ) : null}
+
+      {infoMessage ? <div className="notice notice--info">{infoMessage}</div> : null}
+
+      <section className="card">
+        <div className="card__header">
+          <h2>账户列表</h2>
+          <button
+            className="button button--ghost"
+            onClick={() => void loadAccounts()}
+            disabled={loadingAccounts || mutating}
+          >
+            {loadingAccounts ? '刷新中...' : '刷新列表'}
+          </button>
+        </div>
+
+        {accounts.length === 0 ? (
+          <p className="card__footnote">暂无账户记录。</p>
+        ) : (
+          <div className="admin-list">
+            {accounts.map((account) => (
+              <article className="admin-row" key={account.accountKey}>
+                <div className="admin-row__main">
+                  <strong>{account.nickname ?? '(未获取到昵称)'}</strong>
+                  <span className="admin-row__meta">状态：{accountStatusLabel(account.status)}</span>
+                  <span className="admin-row__meta">WebDAV 用户名：{account.username ?? '-'}</span>
+                  <span className="admin-row__meta">注册时间：{account.registeredAt}</span>
+                  <span className="admin-row__meta">最近登录：{account.lastLoginAt}</span>
+                  <span className="admin-row__meta truncate" title={account.accountKey}>
+                    账户标识：{account.accountKey}
+                  </span>
+                </div>
+                <div className="admin-row__actions">
+                  {account.status !== 'approved' ? (
+                    <button
+                      className="button"
+                      onClick={() => void onUpdateStatus(account.accountKey, 'approved')}
+                      disabled={mutating}
+                    >
+                      批准
+                    </button>
+                  ) : null}
+                  {account.status !== 'rejected' ? (
+                    <button
+                      className="button button--ghost"
+                      onClick={() => void onUpdateStatus(account.accountKey, 'rejected')}
+                      disabled={mutating}
+                    >
+                      拒绝
+                    </button>
+                  ) : null}
+                  <button
+                    className="button button--danger"
+                    onClick={() => void onDeleteAccount(account.accountKey)}
+                    disabled={mutating}
+                  >
+                    删除
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
     </main>
   )

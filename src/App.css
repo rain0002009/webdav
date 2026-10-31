@@ -132,6 +132,45 @@
   background: var(--accent-bg);
 }
 
+.notice--warning {
+  border-color: rgba(180, 83, 9, 0.6);
+  background: rgba(180, 83, 9, 0.12);
+}
+
+.admin-list {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.admin-row__main {
+  display: grid;
+  gap: 4px;
+  min-width: 240px;
+  flex: 1;
+}
+
+.admin-row__meta {
+  color: var(--text-h);
+  font-size: 13px;
+}
+
+.admin-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .field {
   display: block;
   font-size: 14px;

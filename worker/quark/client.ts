@@ -12,6 +12,7 @@ const DEFAULT_LOGIN_QUERY = {
   client_id: '532',
   v: '1.2',
 } as const
+const LIST_PAGE_SIZE = 200
 
 const DEFAULT_HEADERS = {
   accept: 'application/json, text/plain, */*',
@@ -118,6 +119,18 @@ type QuarkFinishEnvelope = {
   message?: string
 }
 
+type QuarkAccountInfoEnvelope = {
+  status?: number
+  code?: number
+  message?: string
+  error?: string
+  data?: {
+    nickname?: string
+    user_id?: string | number
+    member_id?: string | number
+  }
+}
+
 type QuarkQrTokenEnvelope = {
   status?: number
   message?: string
@@ -147,13 +160,13 @@ export class QuarkClient {
     this.onCookiesUpdated = onCookiesUpdated
   }
 
-  async listDirectory(parentFid: string): Promise<QuarkEntry[]> {
+  async listDirectory(parentFid: string, options?: { page?: number; size?: number }): Promise<QuarkEntry[]> {
     const url = new URL('/1/clouddrive/file/sort', QUARK_API_BASE)
     for (const [key, value] of Object.entries({
       ...DEFAULT_QUERY,
       pdir_fid: parentFid,
-      _page: '1',
-      _size: '200',
+      _page: String(options?.page ?? 1),
+      _size: String(options?.size ?? LIST_PAGE_SIZE),
       _fetch_total: '1',
       _fetch_sub_dirs: '1',
       _sort: 'file_type:asc,updated_at:desc',
@@ -223,6 +236,66 @@ export class QuarkClient {
       url: downloadUrl,
       expiresAt: parseDownloadUrlExpiresAt(downloadUrl, downloadItem?.expires_at),
     }
+  }
+
+  async findEntryByName(parentFid: string, name: string, maxPages = 5): Promise<QuarkEntry | null> {
+    for (let page = 1; page <= maxPages; page += 1) {
+      const entries = await this.listDirectory(parentFid, { page })
+      const found = entries.find((entry) => entry.name === name)
+      if (found) {
+        return found
+      }
+      if (entries.length < LIST_PAGE_SIZE) {
+        return null
+      }
+    }
+
+    return null
+  }
+
+  async downloadFileText(fid: string): Promise<string> {
+    const link = await this.getDownloadUrl(fid)
+    const response = await fetch(link.url, {
+      method: 'GET',
+      headers: this.createHeaders(),
+    })
+
+    if (!response.ok) {
+      throw new QuarkApiError(
+        `Failed to download file content (httpStatus=${response.status}).`,
+        response.status,
+      )
+    }
+
+    return await response.text()
+  }
+
+  async getAccountInfo(): Promise<{ nickname?: string; userId?: string }> {
+    const url = new URL('/account/info', QUARK_PAN_API_BASE)
+    url.searchParams.set('fr', 'pc')
+    url.searchParams.set('platform', 'pc')
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: this.createHeaders(),
+    })
+    this.captureCookieUpdates(response)
+
+    const payload = (await response.json().catch(() => null)) as QuarkAccountInfoEnvelope | null
+    if (!response.ok || !payload?.data) {
+      throw new QuarkApiError(this.getErrorMessage(payload, response.status), response.status)
+    }
+
+    const nickname = typeof payload.data.nickname === 'string' ? payload.data.nickname : undefined
+    const rawUserId = payload.data.user_id ?? payload.data.member_id
+    const userId =
+      typeof rawUserId === 'string'
+        ? rawUserId
+        : typeof rawUserId === 'number'
+          ? String(rawUserId)
+          : undefined
+
+    return { nickname, userId }
   }
 
   async getTokenForQrcodeLogin(): Promise<{ qrToken: string; qrUrl: string; expiresAt: string }> {

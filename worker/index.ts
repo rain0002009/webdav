@@ -1,3 +1,4 @@
+import { handleAdminApiRequest } from './api/admin'
 import { handleSessionApiRequest } from './api/session'
 import { jsonError } from './http'
 import { handleWebDavRequest } from './webdav'
@@ -5,6 +6,10 @@ import { handleWebDavRequest } from './webdav'
 export default {
   async fetch(request, env) {
     const url = new URL(request.url)
+
+    if (url.pathname.startsWith('/api/admin/')) {
+      return handleAdminApiRequest(request, env)
+    }
 
     if (url.pathname.startsWith('/api/session/')) {
       return handleSessionApiRequest(request, env)

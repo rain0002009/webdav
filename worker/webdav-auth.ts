@@ -1,6 +1,7 @@
 import {
-  getPersistedQuarkSessionByAccountKey,
+  getAccount,
   getWebDavCredentialsByUsername,
+  type AccountRecord,
   type WebDavCredentials,
 } from './session-store'
 
@@ -13,6 +14,7 @@ type BasicAuthResult =
 type WebDavAuthSuccess = {
   ok: true
   credentials: WebDavCredentials
+  account: AccountRecord
 }
 
 type WebDavAuthFailure = {
@@ -20,7 +22,11 @@ type WebDavAuthFailure = {
   response: Response
 }
 
-export async function authenticateWebDavRequest(request: Request, env: Env): Promise<WebDavAuthSuccess | WebDavAuthFailure> {
+export async function authenticateWebDavRequest(
+  request: Request,
+  env: Env,
+  options?: { requireApproved?: boolean },
+): Promise<WebDavAuthSuccess | WebDavAuthFailure> {
   const auth = parseBasicAuth(request)
   if (!auth.ok) {
     return {
@@ -37,17 +43,36 @@ export async function authenticateWebDavRequest(request: Request, env: Env): Pro
     }
   }
 
-  const persistedSession = await getPersistedQuarkSessionByAccountKey(credentials.accountKey, env)
-  if (!persistedSession?.cookie) {
+  const account = await getAccount(credentials.accountKey, env)
+  if (!account) {
     return {
       ok: false,
-      response: createWebDavAuthChallengeResponse('No bound Quark session is available for this WebDAV account.'),
+      response: createWebDavAuthChallengeResponse('Account no longer exists.'),
+    }
+  }
+
+  if (options?.requireApproved && account.status !== 'approved') {
+    const message =
+      account.status === 'pending'
+        ? '账户待审核：WebDAV 访问尚未激活，请等待管理员审核通过后重试。'
+        : '账户已被拒绝：WebDAV 访问已停用，如有疑问请联系管理员。'
+
+    return {
+      ok: false,
+      response: new Response(message, {
+        status: 403,
+        headers: {
+          'content-type': 'text/plain; charset=utf-8',
+          'cache-control': 'no-store',
+        },
+      }),
     }
   }
 
   return {
     ok: true,
     credentials,
+    account,
   }
 }
 
@@ -61,6 +86,18 @@ export function createWebDavAuthChallengeResponse(message: string, init?: Respon
       ...(init?.headers ?? {}),
     },
   })
+}
+
+export function constantTimeEquals(left: string, right: string): boolean {
+  if (left.length !== right.length) {
+    return false
+  }
+
+  let result = 0
+  for (let index = 0; index < left.length; index += 1) {
+    result |= left.charCodeAt(index) ^ right.charCodeAt(index)
+  }
+  return result === 0
 }
 
 function parseBasicAuth(request: Request): BasicAuthResult {
@@ -95,17 +132,4 @@ function parseBasicAuth(request: Request): BasicAuthResult {
   const password = decoded.slice(separatorIndex + 1)
 
   return { ok: true, username, password }
-}
-
-function constantTimeEquals(left: string, right: string): boolean {
-  if (left.length !== right.length) {
-    return false
-  }
-
-  let result = 0
-  for (let index = 0; index < left.length; index += 1) {
-    result |= left.charCodeAt(index) ^ right.charCodeAt(index)
-  }
-
-  return result === 0
 }

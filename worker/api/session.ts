@@ -1,25 +1,18 @@
-import { constantTimeEquals } from '../auth'
+import { LoginError, finalizeLogin, type LoginOutcome } from '../account'
 import { jsonError, jsonMessage, jsonOk, readJsonBody } from '../http'
 import { QuarkClient } from '../quark/client'
 import {
-  clearSession,
-  ensureWebDavCredentialsForCurrentSession,
+  clearQuarkSessionForAccount,
+  createAnonymousSessionStatus,
   getQrRequest,
   getSessionStatus,
-  getSessionCookie,
-  getWebDavCredentialsByUsername,
-  linkQrRequestToCookieSession,
-  listPersistedQuarkSessions,
-  mergeUpstreamCookies,
-  persistQuarkSessionForCurrentSession,
-  rehydrateCurrentSessionFromPersistence,
-  restorePersistedSession,
+  mergeCookieString,
   saveQrRequest,
-  saveCookieSession,
   updateQrRequest,
-  updateCurrentWebDavCredentials,
+  updateWebDavCredentialsForAccount,
+  type WebDavCredentials,
 } from '../session-store'
-import { probeDriveConnection } from '../webdav'
+import { authenticateWebDavRequest } from '../webdav-auth'
 
 type CookieUpdateRequest = {
   cookie?: string
@@ -28,6 +21,8 @@ type CookieUpdateRequest = {
 type CookieUpdateResponse = {
   updated: boolean
   message?: string
+  accountStatus?: string
+  webdavCredentials?: WebDavCredentials
 }
 
 type WebDavCredentialsUpdateRequest = {
@@ -35,18 +30,11 @@ type WebDavCredentialsUpdateRequest = {
   password?: string
 }
 
+const UNSAFE_WEBDAV_PASSWORD_CHARS = /[%@:/]/
+
 type LogoutResponse = {
   cleared: boolean
   message: string
-}
-
-type RestoreSessionRequest = {
-  accountKey?: string
-}
-
-type WebDavLoginRequest = {
-  username?: string
-  password?: string
 }
 
 type QrStartResponse = {
@@ -66,6 +54,8 @@ type QrStatusResponse = {
   loggedIn: boolean
   message: string
   error?: string
+  accountStatus?: string
+  webdavCredentials?: WebDavCredentials
 }
 
 export async function handleSessionApiRequest(request: Request, env: Env): Promise<Response> {
@@ -74,42 +64,47 @@ export async function handleSessionApiRequest(request: Request, env: Env): Promi
   const origin = url.origin
 
   if (route === '/api/session/status' && request.method === 'GET') {
-    const restored = await rehydrateCurrentSessionFromPersistence(origin, env)
-    const persistedSessions = restored ? [] : await listPersistedQuarkSessions(env)
-    await ensureWebDavCredentialsForCurrentSession(env)
-    const sessionStatus = getSessionStatus(origin)
-    if (sessionStatus.loggedIn && sessionStatus.accountKey) {
-      await probeDriveConnection(sessionStatus.accountKey, env)
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader) {
+      return jsonOk(createAnonymousSessionStatus(origin))
     }
 
-    return jsonOk({
-      ...getSessionStatus(origin),
-      restorableSessions: persistedSessions,
-      requiresAccountSelection: !restored && persistedSessions.length > 1,
-    })
+    const auth = await authenticateWebDavRequest(request, env)
+    if (!auth.ok) {
+      return jsonError(await auth.response.text(), auth.response.status)
+    }
+
+    return jsonOk(await getSessionStatus(origin, auth.credentials.accountKey, env))
   }
 
   if (route === '/api/session/qr/start' && request.method === 'POST') {
-    const client = new QuarkClient(getSessionCookie() ?? '', (cookieUpdates) => {
-      mergeUpstreamCookies(cookieUpdates)
-    })
-    const qrLogin = await client.getTokenForQrcodeLogin()
-    const record = saveQrRequest({
-      qrUrl: qrLogin.qrUrl,
-      qrToken: qrLogin.qrToken,
-      expiresAt: qrLogin.expiresAt,
+    let cookieJar = ''
+    const client = new QuarkClient('', (cookieUpdates) => {
+      cookieJar = mergeCookieString(cookieJar, cookieUpdates) ?? cookieJar
     })
 
-    return jsonMessage<QrStartResponse>(
-      {
-        requestId: record.requestId,
-        qrUrl: record.qrUrl,
-        qrToken: record.qrToken,
-        expiresAt: record.expiresAt,
-        message: '二维码登录已启动，请使用夸克扫描二维码并返回此页面查询状态。',
-      },
-      'QR login session created.',
-    )
+    try {
+      const qrLogin = await client.getTokenForQrcodeLogin()
+      const record = saveQrRequest({
+        qrUrl: qrLogin.qrUrl,
+        qrToken: qrLogin.qrToken,
+        expiresAt: qrLogin.expiresAt,
+        cookieJar,
+      })
+
+      return jsonMessage<QrStartResponse>(
+        {
+          requestId: record.requestId,
+          qrUrl: record.qrUrl,
+          qrToken: record.qrToken,
+          expiresAt: record.expiresAt,
+          message: '二维码登录已启动，请使用夸克扫描二维码并返回此页面查询状态。',
+        },
+        'QR login session created.',
+      )
+    } catch (error) {
+      return upstreamError(error, 'Failed to start QR login.')
+    }
   }
 
   if (route === '/api/session/qr/status' && request.method === 'GET') {
@@ -124,34 +119,46 @@ export async function handleSessionApiRequest(request: Request, env: Env): Promi
     }
 
     if (record.status === 'pending') {
-      const client = new QuarkClient(getSessionCookie() ?? '', (cookieUpdates) => {
-        mergeUpstreamCookies(cookieUpdates)
+      const client = new QuarkClient(record.cookieJar, (cookieUpdates) => {
+        record.cookieJar = mergeCookieString(record.cookieJar, cookieUpdates) ?? record.cookieJar
       })
-      const qrStatus = await client.getServiceTicketByQrcodeToken(record.qrToken)
+
+      let qrStatus
+      try {
+        qrStatus = await client.getServiceTicketByQrcodeToken(record.qrToken)
+      } catch (error) {
+        return upstreamError(error, 'Failed to query QR login status.')
+      }
 
       if (qrStatus.status === 'confirmed' && qrStatus.serviceTicket) {
-        await client.getAccountInfoByServiceTicket(qrStatus.serviceTicket)
-        const currentCookie = getSessionCookie()
-        if (!currentCookie) {
+        try {
+          await client.getAccountInfoByServiceTicket(qrStatus.serviceTicket)
+        } catch (error) {
+          return upstreamError(error, 'QR login completed but the Quark session exchange failed.')
+        }
+
+        const capturedCookie = record.cookieJar
+        if (!capturedCookie) {
           return jsonError('QR login completed but no usable Quark cookie was captured.', 502)
         }
 
-        const linkedRecord = linkQrRequestToCookieSession(requestId, currentCookie, origin)
-        if (!linkedRecord) {
-          return jsonError('QR request not found.', 404)
+        const outcome = await runLogin(capturedCookie, env)
+        if ('response' in outcome) {
+          return outcome.response
         }
 
-        await persistQuarkSessionForCurrentSession(env)
-        await ensureWebDavCredentialsForCurrentSession(env)
+        updateQrRequest(requestId, { status: 'linked', cookieJar: capturedCookie })
 
         return jsonOk<QrStatusResponse>({
-          requestId: linkedRecord.requestId,
-          status: linkedRecord.status,
-          qrUrl: linkedRecord.qrUrl,
-          qrToken: linkedRecord.qrToken,
-          expiresAt: linkedRecord.expiresAt,
+          requestId,
+          status: 'linked',
+          qrUrl: record.qrUrl,
+          qrToken: record.qrToken,
+          expiresAt: record.expiresAt,
           loggedIn: true,
-          message: '二维码登录成功，当前 Worker 会话已解锁。',
+          message: describeLoginOutcome(outcome),
+          accountStatus: outcome.account.status,
+          webdavCredentials: outcome.credentials,
         })
       }
 
@@ -197,7 +204,7 @@ export async function handleSessionApiRequest(request: Request, env: Env): Promi
     const loggedIn = record.status === 'linked'
     const statusMessage =
       record.status === 'linked'
-        ? '二维码登录已完成，当前 Worker 会话已认证。'
+        ? '二维码登录已完成，当前账户已认证。'
         : record.status === 'expired'
           ? '二维码已失效，请重新开始扫码登录。'
           : '等待夸克扫码确认。'
@@ -220,93 +227,62 @@ export async function handleSessionApiRequest(request: Request, env: Env): Promi
       return body.response
     }
 
-    try {
-      saveCookieSession(body.cookie, origin)
-    } catch (error) {
-      return jsonError(error instanceof Error ? error.message : 'Cookie session could not be bound to an account.', 400)
+    const outcome = await runLogin(body.cookie, env)
+    if ('response' in outcome) {
+      return outcome.response
     }
-
-    await persistQuarkSessionForCurrentSession(env)
-    await ensureWebDavCredentialsForCurrentSession(env)
 
     return jsonMessage<CookieUpdateResponse>(
       {
         updated: true,
-        message: 'Cookie session saved. WebDAV route is now unlocked for this worker isolate.',
+        message: describeLoginOutcome(outcome),
+        accountStatus: outcome.account.status,
+        webdavCredentials: outcome.credentials,
       },
       'Cookie session saved.',
     )
   }
 
   if (route === '/api/session/webdav-credentials' && request.method === 'POST') {
-    await rehydrateCurrentSessionFromPersistence(origin, env)
+    const auth = await authenticateWebDavRequest(request, env)
+    if (!auth.ok) {
+      return jsonError(await auth.response.text(), auth.response.status)
+    }
+
     const body = await parseWebDavCredentialsRequest(request)
     if (!body.ok) {
       return body.response
     }
 
-    const credentials = await updateCurrentWebDavCredentials(body.username, body.password, env)
-    if (!credentials) {
-      return jsonError('Current Quark session is not logged in.', 401)
+    const result = await updateWebDavCredentialsForAccount(
+      auth.credentials.accountKey,
+      body.username,
+      body.password,
+      env,
+    )
+    if (!result.ok) {
+      return jsonError(result.error, 409)
     }
 
     return jsonMessage(
       {
-        credentials,
+        credentials: result.credentials,
       },
       'WebDAV credentials updated.',
     )
   }
 
-  if (route === '/api/session/login' && request.method === 'POST') {
-    const body = await parseWebDavLoginRequest(request)
-    if (!body.ok) {
-      return body.response
-    }
-
-    const credentials = await getWebDavCredentialsByUsername(body.username, env)
-    if (!credentials || !constantTimeEquals(body.password, credentials.password)) {
-      return jsonError('WebDAV 用户名或密码不正确。', 401)
-    }
-
-    const restored = await restorePersistedSession(credentials.accountKey, origin, env)
-    if (!restored) {
-      return jsonError('该 WebDAV 账户对应的夸克会话不存在或已过期，请重新扫码或重新导入 Cookie。', 401)
-    }
-
-    await ensureWebDavCredentialsForCurrentSession(env)
-    return jsonMessage(getSessionStatus(origin), 'WebDAV login restored the persisted session.')
-  }
-
-  if (route === '/api/session/restore' && request.method === 'POST') {
-    let body: RestoreSessionRequest
-
-    try {
-      body = await readJsonBody<RestoreSessionRequest>(request)
-    } catch (error) {
-      return jsonError(error instanceof Error ? error.message : 'Invalid JSON body.', 400)
-    }
-
-    const accountKey = body.accountKey?.trim()
-    if (!accountKey) {
-      return jsonError('Account key is required.', 400)
-    }
-
-    const restored = await restorePersistedSession(accountKey, origin, env)
-    if (!restored) {
-      return jsonError('Requested persisted session was not found.', 404)
-    }
-
-    await ensureWebDavCredentialsForCurrentSession(env)
-    return jsonMessage(getSessionStatus(origin), 'Persisted session restored.')
-  }
-
   if (route === '/api/session/logout' && request.method === 'POST') {
-    clearSession()
+    const auth = await authenticateWebDavRequest(request, env)
+    if (!auth.ok) {
+      return jsonError(await auth.response.text(), auth.response.status)
+    }
+
+    await clearQuarkSessionForAccount(auth.credentials.accountKey, env)
 
     return jsonOk<LogoutResponse>({
       cleared: true,
-      message: 'Worker session cleared.',
+      message: 'Quark session cleared for this account.',
     })
   }
 
@@ -315,6 +291,35 @@ export async function handleSessionApiRequest(request: Request, env: Env): Promi
       allow: 'GET, POST',
     },
   })
+}
+
+async function runLogin(
+  cookie: string,
+  env: Env,
+): Promise<LoginOutcome | { response: Response }> {
+  try {
+    return await finalizeLogin(cookie, env)
+  } catch (error) {
+    if (error instanceof LoginError) {
+      return { response: jsonError(error.message, error.status) }
+    }
+    return { response: upstreamError(error, 'Login failed.') }
+  }
+}
+
+function describeLoginOutcome(outcome: LoginOutcome): string {
+  if (outcome.created) {
+    return outcome.account.status === 'pending'
+      ? '注册申请已提交，WebDAV 凭据已生成但需等待管理员审核通过后才可使用。'
+      : '注册完成，WebDAV 凭据已生成。'
+  }
+
+  return '登录成功，已合并回原有账户，沿用此前的 WebDAV 用户名和密码。'
+}
+
+function upstreamError(error: unknown, fallback: string): Response {
+  const message = error instanceof Error && error.message ? error.message : fallback
+  return jsonError(message, 502)
 }
 
 async function parseCookieRequest(
@@ -348,8 +353,7 @@ async function parseCookieRequest(
 async function parseWebDavCredentialsRequest(
   request: Request,
 ): Promise<
-  | { ok: true; username: string; password: string }
-  | { ok: false; response: Response }
+  { ok: true; username: string; password: string } | { ok: false; response: Response }
 > {
   let body: WebDavCredentialsUpdateRequest
 
@@ -378,43 +382,13 @@ async function parseWebDavCredentialsRequest(
     }
   }
 
-  return {
-    ok: true,
-    username,
-    password,
-  }
-}
-
-async function parseWebDavLoginRequest(
-  request: Request,
-): Promise<
-  | { ok: true; username: string; password: string }
-  | { ok: false; response: Response }
-> {
-  let body: WebDavLoginRequest
-
-  try {
-    body = await readJsonBody<WebDavLoginRequest>(request)
-  } catch (error) {
+  if (UNSAFE_WEBDAV_PASSWORD_CHARS.test(password)) {
     return {
       ok: false,
-      response: jsonError(error instanceof Error ? error.message : 'Invalid JSON body.', 400),
-    }
-  }
-
-  const username = body.username?.trim()
-  const password = body.password?.trim()
-  if (!username) {
-    return {
-      ok: false,
-      response: jsonError('WebDAV username cannot be empty.', 400),
-    }
-  }
-
-  if (!password) {
-    return {
-      ok: false,
-      response: jsonError('WebDAV password cannot be empty.', 400),
+      response: jsonError(
+        'WebDAV password cannot contain %, @, :, or / because some clients cannot parse those characters safely.',
+        400,
+      ),
     }
   }
 
