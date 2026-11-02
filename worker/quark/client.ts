@@ -1,3 +1,4 @@
+import { mergeCookieString } from '../session-store'
 import { QuarkApiError, type QuarkDownloadLink, type QuarkEntry, type QuarkUploadTicket } from './types'
 
 const QUARK_API_BASE = 'https://drive-pc.quark.cn'
@@ -152,7 +153,7 @@ type QuarkQrStatusEnvelope = {
 }
 
 export class QuarkClient {
-  private readonly cookie: string
+  private cookie: string
   private readonly onCookiesUpdated?: (cookieUpdates: string[]) => void
 
   constructor(cookie: string, onCookiesUpdated?: (cookieUpdates: string[]) => void) {
@@ -257,7 +258,7 @@ export class QuarkClient {
     const link = await this.getDownloadUrl(fid)
     const response = await fetch(link.url, {
       method: 'GET',
-      headers: this.createHeaders(),
+      headers: this.createDownloadHeaders(),
     })
 
     if (!response.ok) {
@@ -793,6 +794,18 @@ export class QuarkClient {
     }
   }
 
+  // Presigned download URLs sign their request headers: sending API JSON
+  // headers (e.g. content-type: application/json) breaks the signature and
+  // the CDN answers 403 SignatureDoesNotMatch.
+  private createDownloadHeaders(): HeadersInit {
+    return {
+      cookie: this.cookie,
+      referer: DEFAULT_HEADERS.referer,
+      origin: DEFAULT_HEADERS.origin,
+      'user-agent': DEFAULT_HEADERS['user-agent'],
+    }
+  }
+
   private getErrorMessage(
     payload: { error?: string; message?: string; status?: number; code?: number } | null,
     status: number,
@@ -808,16 +821,17 @@ export class QuarkClient {
   }
 
   private captureCookieUpdates(response: Response): void {
-    if (!this.onCookiesUpdated) {
-      return
-    }
-
     const cookieUpdates = getResponseSetCookies(response)
     if (cookieUpdates.length === 0) {
       return
     }
 
-    this.onCookiesUpdated(cookieUpdates)
+    // Quark rotates session cookies (e.g. __puus) mid-flow — sometimes after the
+    // QR ticket exchange already finished without issuing one. The CDN rejects
+    // downloads with 412 unless the request carries the current __puus, so the
+    // client must keep its own cookie fresh, not just report updates upstream.
+    this.cookie = mergeCookieString(this.cookie, cookieUpdates) ?? this.cookie
+    this.onCookiesUpdated?.(cookieUpdates)
   }
 }
 
