@@ -1,6 +1,13 @@
 import { QRCodeSVG } from 'qrcode.react'
 import { accountStatusLabel } from '../../lib/account-status'
+import { button, card, code, details, field, input, notice, page } from '../../lib/styles'
+import { qr } from './styles'
 import { useConsoleSession } from './useConsoleSession'
+
+const pageStyles = page()
+const cardStyles = card()
+const detailStyles = details()
+const qrStyles = qr()
 
 export default function Console() {
   const {
@@ -43,92 +50,92 @@ export default function Console() {
   const qrCanRender = qrValue.length > 0
 
   return (
-    <main className="panel">
-      <header className="panel__header">
-        <h1>夸克网盘 WebDAV 控制台</h1>
-        <p className="panel__subtitle">用于管理 Worker 桥接会话与登录状态</p>
+    <main className={pageStyles.base()}>
+      <header>
+        <h1 className={pageStyles.title()}>夸克网盘 WebDAV 控制台</h1>
+        <p className={pageStyles.subtitle()}>用于管理 Worker 桥接会话与登录状态</p>
       </header>
 
-      <div className="notice notice--warning">
-        ⚠️ 重要：登录后你的网盘根目录会生成 <code>dav-id.txt</code>（身份文件），它就是你的 WebDAV 登录凭证。请勿分享、转存、修改或删除该文件，否则账户可能被他人接管，或需要重新注册并等待审核。
+      <div className={notice({ intent: 'warning' })}>
+        ⚠️ 重要：登录后你的网盘根目录会生成 <code className={code()}>dav-id.txt</code>（身份文件），它就是你的 WebDAV 登录凭证。请勿分享、转存、修改或删除该文件，否则账户可能被他人接管，或需要重新注册并等待审核。
       </div>
 
       {errorMessage ? (
-        <div className="notice notice--error" role="alert">
+        <div className={notice({ intent: 'error' })} role="alert">
           {errorMessage}
         </div>
       ) : null}
 
-      {infoMessage ? <div className="notice notice--info">{infoMessage}</div> : null}
+      {infoMessage ? <div className={notice()}>{infoMessage}</div> : null}
 
-      <section className="card">
-        <div className="card__header">
-          <h2>连接与会话状态</h2>
-          <button className="button button--ghost" onClick={() => void loadSession()} disabled={isBusy}>
+      <section className={cardStyles.base()}>
+        <div className={cardStyles.header()}>
+          <h2 className={cardStyles.title()}>连接与会话状态</h2>
+          <button className={button({ intent: 'ghost' })} onClick={() => void loadSession()} disabled={isBusy}>
             {loadingSession ? '刷新中...' : '刷新状态'}
           </button>
         </div>
-        <dl className="kv-grid">
-          <div>
-            <dt>WebDAV 地址</dt>
-            <dd>
-              <code>{webdavEndpoint}</code>
+        <dl className={detailStyles.base()}>
+          <div className={detailStyles.item()}>
+            <dt className={detailStyles.term()}>WebDAV 地址</dt>
+            <dd className={detailStyles.value()}>
+              <code className={code()}>{webdavEndpoint}</code>
             </dd>
           </div>
-          <div>
-            <dt>认证状态</dt>
-            <dd>{session?.loggedIn ? '已登录' : '未登录'}</dd>
+          <div className={detailStyles.item()}>
+            <dt className={detailStyles.term()}>认证状态</dt>
+            <dd className={detailStyles.value()}>{session?.loggedIn ? '已登录' : '未登录'}</dd>
           </div>
-          <div>
-            <dt>账户状态</dt>
-            <dd>{accountStatusLabel(session?.accountStatus)}</dd>
+          <div className={detailStyles.item()}>
+            <dt className={detailStyles.term()}>账户状态</dt>
+            <dd className={detailStyles.value()}>{accountStatusLabel(session?.accountStatus)}</dd>
           </div>
-          <div>
-            <dt>夸克昵称</dt>
-            <dd>{session?.user ?? '-'}</dd>
+          <div className={detailStyles.item()}>
+            <dt className={detailStyles.term()}>夸克昵称</dt>
+            <dd className={detailStyles.value()}>{session?.user ?? '-'}</dd>
           </div>
-          <div>
-            <dt>会话过期时间</dt>
-            <dd>{session?.expiresAt ?? '-'}</dd>
+          <div className={detailStyles.item()}>
+            <dt className={detailStyles.term()}>会话过期时间</dt>
+            <dd className={detailStyles.value()}>{session?.expiresAt ?? '-'}</dd>
           </div>
-          <div>
-            <dt>网盘错误</dt>
-            <dd>{session?.error ?? '-'}</dd>
+          <div className={detailStyles.item()}>
+            <dt className={detailStyles.term()}>网盘错误</dt>
+            <dd className={detailStyles.value()}>{session?.error ?? '-'}</dd>
           </div>
         </dl>
-        <p className="card__footnote">
+        <p className={cardStyles.footnote()}>
           使用方式：在 WebDAV 客户端把上方地址作为“服务器地址”；用户名和密码请填写在客户端的认证字段中，不要写成
-          <code>https://user:pass@host/dav</code> 这类 URL。
+          <code className={code()}>https://user:pass@host/dav</code> 这类 URL。
         </p>
       </section>
 
-      <section className="card">
-        <div className="card__header">
-          <h2>WebDAV 凭据</h2>
-          <button className="button" onClick={onSaveWebDavCredentials} disabled={isBusy || !session?.loggedIn}>
+      <section className={cardStyles.base()}>
+        <div className={cardStyles.header()}>
+          <h2 className={cardStyles.title()}>WebDAV 凭据</h2>
+          <button className={button()} onClick={onSaveWebDavCredentials} disabled={isBusy || !session?.loggedIn}>
             {savingWebDavCredentials ? '保存中...' : '保存凭据'}
           </button>
         </div>
 
         {session?.loggedIn ? (
           <>
-            <p className="card__footnote">
+            <p className={cardStyles.footnote()}>
               当前登录的夸克账户会自动绑定一组 WebDAV 用户名和密码。这里显示的是当前有效凭据，你可以直接修改并保存。
             </p>
             {session?.accountStatus === 'pending' ? (
-              <div className="notice notice--warning">
+              <div className={notice({ intent: 'warning' })}>
                 当前账户处于待审核状态：凭据已生成但尚未激活，WebDAV 客户端连接会被拒绝，直到管理员审核通过。
               </div>
             ) : null}
             {session?.accountStatus === 'rejected' ? (
-              <div className="notice notice--error">
+              <div className={notice({ intent: 'error' })}>
                 当前账户已被拒绝：WebDAV 访问已停用。如有疑问请联系管理员。
               </div>
             ) : null}
-            <div className="credentials-grid">
-              <label className="field credentials-grid__field" htmlFor="webdav-username-input">
-                <span>WebDAV 用户名</span>
-                <input
+            <div className="grid grid-cols-2 gap-[12px] mt-[14px] max-[720px]:grid-cols-1">
+              <label className={field({ inline: true })} htmlFor="webdav-username-input">
+                <span className="block mb-[8px]">WebDAV 用户名</span>
+                <input className={input()}
                   id="webdav-username-input"
                   type="text"
                   value={webdavUsernameInput}
@@ -136,9 +143,9 @@ export default function Console() {
                   disabled={isBusy}
                 />
               </label>
-              <label className="field credentials-grid__field" htmlFor="webdav-password-input">
-                <span>WebDAV 密码</span>
-                <input
+              <label className={field({ inline: true })} htmlFor="webdav-password-input">
+                <span className="block mb-[8px]">WebDAV 密码</span>
+                <input className={input()}
                   id="webdav-password-input"
                   type="text"
                   value={webdavPasswordInput}
@@ -150,61 +157,61 @@ export default function Console() {
           </>
         ) : hasLocalCredentialsCache ? (
           <>
-            <p className="card__footnote">
+            <p className={cardStyles.footnote()}>
               这里显示的是当前浏览器本地缓存的上一组 WebDAV 凭据，方便你刷新页面后继续查看。真正使用前，仍需要先恢复对应的夸克登录状态。
             </p>
-            <div className="credentials-grid credentials-grid--readonly">
-              <label className="field credentials-grid__field" htmlFor="webdav-username-input">
-                <span>本地缓存的 WebDAV 用户名</span>
-                <input id="webdav-username-input" type="text" value={webdavUsernameInput} disabled />
+            <div className="grid grid-cols-2 gap-[12px] mt-[14px] max-[720px]:grid-cols-1">
+              <label className={field({ inline: true })} htmlFor="webdav-username-input">
+                <span className="block mb-[8px]">本地缓存的 WebDAV 用户名</span>
+                <input className={input()} id="webdav-username-input" type="text" value={webdavUsernameInput} disabled />
               </label>
-              <label className="field credentials-grid__field" htmlFor="webdav-password-input">
-                <span>本地缓存的 WebDAV 密码</span>
-                <input id="webdav-password-input" type="text" value={webdavPasswordInput} disabled />
+              <label className={field({ inline: true })} htmlFor="webdav-password-input">
+                <span className="block mb-[8px]">本地缓存的 WebDAV 密码</span>
+                <input className={input()} id="webdav-password-input" type="text" value={webdavPasswordInput} disabled />
               </label>
             </div>
           </>
         ) : (
-          <p className="card__footnote">请先完成夸克登录。登录成功后，系统会自动为当前夸克账户生成一组 WebDAV 用户名和密码。</p>
+          <p className={cardStyles.footnote()}>请先完成夸克登录。登录成功后，系统会自动为当前夸克账户生成一组 WebDAV 用户名和密码。</p>
         )}
       </section>
 
       {!session?.loggedIn ? (
         <>
-          <section className="card">
-            <div className="card__header">
-              <h2>二维码登录</h2>
-              <div className="card__actions">
-                <button className="button" onClick={onStartQrLogin} disabled={isBusy}>
+          <section className={cardStyles.base()}>
+            <div className={cardStyles.header()}>
+              <h2 className={cardStyles.title()}>二维码登录</h2>
+              <div className={cardStyles.actions()}>
+                <button className={button()} onClick={onStartQrLogin} disabled={isBusy}>
                   {startingQr ? '启动中...' : '开始二维码登录'}
                 </button>
-                <button className="button button--ghost" onClick={onPollQrStatus} disabled={isBusy}>
+                <button className={button({ intent: 'ghost' })} onClick={onPollQrStatus} disabled={isBusy}>
                   {pollingQr ? '查询中...' : '查询扫码状态'}
                 </button>
               </div>
             </div>
 
-            <div className="qr-layout">
-              <article className="qr-visual" aria-live="polite">
+            <div className={qrStyles.layout()}>
+              <article className={qrStyles.visual()} aria-live="polite">
                 {qrCanRender ? (
                   <>
-                    <div className="qr-visual__badge">可扫码二维码</div>
-                    <div className="qr-code-frame">
+                    <div className={qrStyles.badge()}>可扫码二维码</div>
+                    <div className={qrStyles.frame()}>
                       <QRCodeSVG
                         value={qrValue}
                         size={176}
                         marginSize={3}
                         bgColor="transparent"
                         fgColor="currentColor"
-                        className="qr-code-svg"
+                        className="block"
                       />
                     </div>
-                    <p className="qr-visual__hint">
+                    <p className={qrStyles.hint()}>
                       这是根据当前后端真实返回的链接/令牌生成的二维码。你现在至少可以扫码看到对应内容，但这不代表后端已经打通真实夸克扫码登录回调。
                     </p>
                     {qrUrl ? (
                       <a
-                        className="qr-visual__link"
+                        className={qrStyles.link()}
                         href={qrUrl}
                         target="_blank"
                         rel="noreferrer"
@@ -213,69 +220,69 @@ export default function Console() {
                         在新窗口打开扫码链接
                       </a>
                     ) : null}
-                    <div className="qr-visual__url" title={qrValue}>
+                    <div className={qrStyles.url()} title={qrValue}>
                       {qrValue}
                     </div>
                   </>
                 ) : hasQrPayload ? (
                   <>
-                    <div className="qr-visual__badge">已收到登录上下文</div>
-                    <p className="qr-visual__hint">已拿到请求标识或令牌，但当前数据还不足以生成二维码。请继续点击“查询扫码状态”确认登录进度。</p>
+                    <div className={qrStyles.badge()}>已收到登录上下文</div>
+                    <p className={qrStyles.hint()}>已拿到请求标识或令牌，但当前数据还不足以生成二维码。请继续点击“查询扫码状态”确认登录进度。</p>
                   </>
                 ) : (
                   <>
-                    <div className="qr-visual__placeholder" aria-hidden="true">
-                      <span />
-                      <span />
-                      <span />
+                    <div className={qrStyles.placeholder()} aria-hidden="true">
+                      <span className={qrStyles.marker({ class: 'top-[10px] left-[10px]' })} />
+                      <span className={qrStyles.marker({ class: 'top-[10px] right-[10px]' })} />
+                      <span className={qrStyles.marker({ class: 'bottom-[10px] left-[10px]' })} />
                     </div>
-                    <p className="qr-visual__hint">点击“开始二维码登录”后，若后端仅返回链接或令牌，这里会展示真实返回内容与限制说明。</p>
+                    <p className={qrStyles.hint()}>点击“开始二维码登录”后，若后端仅返回链接或令牌，这里会展示真实返回内容与限制说明。</p>
                   </>
                 )}
               </article>
 
-              <dl className="kv-grid kv-grid--qr">
-                <div>
-                  <dt>请求 ID</dt>
-                  <dd>{qrRequestId ?? '-'}</dd>
+              <dl className={detailStyles.base({ class: 'content-start' })}>
+                <div className={detailStyles.item()}>
+                  <dt className={detailStyles.term()}>请求 ID</dt>
+                  <dd className={detailStyles.value()}>{qrRequestId ?? '-'}</dd>
                 </div>
-                <div>
-                  <dt>二维码状态</dt>
-                  <dd>{qrCurrentStatus ?? '-'}</dd>
+                <div className={detailStyles.item()}>
+                  <dt className={detailStyles.term()}>二维码状态</dt>
+                  <dd className={detailStyles.value()}>{qrCurrentStatus ?? '-'}</dd>
                 </div>
-                <div>
-                  <dt>二维码链接</dt>
-                  <dd className="truncate">{qrUrl ?? '-'}</dd>
+                <div className={detailStyles.item()}>
+                  <dt className={detailStyles.term()}>二维码链接</dt>
+                  <dd className={detailStyles.value({ class: 'truncate' })}>{qrUrl ?? '-'}</dd>
                 </div>
-                <div>
-                  <dt>二维码令牌</dt>
-                  <dd className="truncate">{qrToken ?? '-'}</dd>
+                <div className={detailStyles.item()}>
+                  <dt className={detailStyles.term()}>二维码令牌</dt>
+                  <dd className={detailStyles.value({ class: 'truncate' })}>{qrToken ?? '-'}</dd>
                 </div>
-                <div>
-                  <dt>失效时间</dt>
-                  <dd>{qrExpiresAt ?? '-'}</dd>
+                <div className={detailStyles.item()}>
+                  <dt className={detailStyles.term()}>失效时间</dt>
+                  <dd className={detailStyles.value()}>{qrExpiresAt ?? '-'}</dd>
                 </div>
-                <div>
-                  <dt>最近错误</dt>
-                  <dd>{qrError ?? '-'}</dd>
+                <div className={detailStyles.item()}>
+                  <dt className={detailStyles.term()}>最近错误</dt>
+                  <dd className={detailStyles.value()}>{qrError ?? '-'}</dd>
                 </div>
               </dl>
             </div>
 
-            <p className="card__footnote">说明：页面现在会把后端返回的链接或令牌渲染成可扫码二维码，但真实夸克扫码成功回调仍未接通；如果扫码后没有自动登录，这不是你的操作问题，而是后端链路还在开发中。</p>
+            <p className={cardStyles.footnote()}>说明：页面现在会把后端返回的链接或令牌渲染成可扫码二维码，但真实夸克扫码成功回调仍未接通；如果扫码后没有自动登录，这不是你的操作问题，而是后端链路还在开发中。</p>
           </section>
 
-          <section className="card">
-            <div className="card__header">
-              <h2>手动 Cookie 兜底</h2>
-              <button className="button" onClick={onSaveCookie} disabled={isBusy}>
+          <section className={cardStyles.base()}>
+            <div className={cardStyles.header()}>
+              <h2 className={cardStyles.title()}>手动 Cookie 兜底</h2>
+              <button className={button()} onClick={onSaveCookie} disabled={isBusy}>
                 {savingCookie ? '保存中...' : '保存 Cookie'}
               </button>
             </div>
-            <label className="field" htmlFor="cookie-input">
+            <label className={field()} htmlFor="cookie-input">
               Cookie 字符串
             </label>
-            <textarea
+            <textarea className={input({ multiline: true })}
               id="cookie-input"
               value={cookieInput}
               onChange={(event) => setCookieInput(event.target.value)}
@@ -287,10 +294,10 @@ export default function Console() {
         </>
       ) : null}
 
-      <section className="card card--danger">
-        <div className="card__header">
-          <h2>会话清理</h2>
-          <button className="button button--danger" onClick={onClearSession} disabled={isBusy}>
+      <section className={cardStyles.base({ intent: 'danger' })}>
+        <div className={cardStyles.header()}>
+          <h2 className={cardStyles.title()}>会话清理</h2>
+          <button className={button({ intent: 'danger' })} onClick={onClearSession} disabled={isBusy}>
             {clearingSession ? '清理中...' : '清理会话'}
           </button>
         </div>

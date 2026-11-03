@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { fetchJson } from '../../lib/api'
 import { accountStatusLabel } from '../../lib/account-status'
+import { button, card, notice, page } from '../../lib/styles'
 
 type AdminAccountView = {
   accountKey: string
@@ -11,6 +12,9 @@ type AdminAccountView = {
   lastLoginAt: string
   username?: string
 }
+
+const pageStyles = page()
+const cardStyles = card()
 
 export default function AdminPanel() {
   const adminToken = useMemo(
@@ -117,29 +121,29 @@ export default function AdminPanel() {
   )
 
   return (
-    <main className="panel">
-      <header className="panel__header">
-        <h1>账户审核与管理</h1>
-        <p className="panel__subtitle">管理 WebDAV 账户的准入：批准、拒绝或删除</p>
+    <main className={pageStyles.base()}>
+      <header>
+        <h1 className={pageStyles.title()}>账户审核与管理</h1>
+        <p className={pageStyles.subtitle()}>管理 WebDAV 账户的准入：批准、拒绝或删除</p>
       </header>
 
-      <div className="notice notice--warning">
+      <div className={notice({ intent: 'warning' })}>
         本页面受 TOKEN 保护，但令牌会出现在地址栏中。请勿把带 token 的链接转发给他人，使用后建议清理浏览器历史。
       </div>
 
       {errorMessage ? (
-        <div className="notice notice--error" role="alert">
+        <div className={notice({ intent: 'error' })} role="alert">
           {errorMessage}
         </div>
       ) : null}
 
-      {infoMessage ? <div className="notice notice--info">{infoMessage}</div> : null}
+      {infoMessage ? <div className={notice()}>{infoMessage}</div> : null}
 
-      <section className="card">
-        <div className="card__header">
-          <h2>账户列表</h2>
+      <section className={cardStyles.base()}>
+        <div className={cardStyles.header()}>
+          <h2 className={cardStyles.title()}>账户列表</h2>
           <button
-            className="button button--ghost"
+            className={button({ intent: 'ghost' })}
             onClick={() => void loadAccounts()}
             disabled={loadingAccounts || mutating}
           >
@@ -148,25 +152,25 @@ export default function AdminPanel() {
         </div>
 
         {accounts.length === 0 ? (
-          <p className="card__footnote">暂无账户记录。</p>
+          <p className={cardStyles.footnote()}>暂无账户记录。</p>
         ) : (
-          <div className="admin-list">
+          <div className="grid gap-[12px]">
             {accounts.map((account) => (
-              <article className="admin-row" key={account.accountKey}>
-                <div className="admin-row__main">
+              <article className="flex flex-wrap gap-[12px] justify-between items-start border border-solid border-border rounded-[12px] p-[12px]" key={account.accountKey}>
+                <div className="grid gap-[4px] min-w-[240px] flex-1">
                   <strong>{account.nickname ?? '(未获取到昵称)'}</strong>
-                  <span className="admin-row__meta">状态：{accountStatusLabel(account.status)}</span>
-                  <span className="admin-row__meta">WebDAV 用户名：{account.username ?? '-'}</span>
-                  <span className="admin-row__meta">注册时间：{account.registeredAt}</span>
-                  <span className="admin-row__meta">最近登录：{account.lastLoginAt}</span>
-                  <span className="admin-row__meta truncate" title={account.accountKey}>
+                  <span className="text-heading text-[13px]">状态：{accountStatusLabel(account.status)}</span>
+                  <span className="text-heading text-[13px]">WebDAV 用户名：{account.username ?? '-'}</span>
+                  <span className="text-heading text-[13px]">注册时间：{account.registeredAt}</span>
+                  <span className="text-heading text-[13px]">最近登录：{account.lastLoginAt}</span>
+                  <span className="text-heading text-[13px] truncate" title={account.accountKey}>
                     账户标识：{account.accountKey}
                   </span>
                 </div>
-                <div className="admin-row__actions">
+                <div className="flex flex-wrap gap-[8px]">
                   {account.status !== 'approved' ? (
                     <button
-                      className="button"
+                      className={button()}
                       onClick={() => void onUpdateStatus(account.accountKey, 'approved')}
                       disabled={mutating}
                     >
@@ -175,7 +179,7 @@ export default function AdminPanel() {
                   ) : null}
                   {account.status !== 'rejected' ? (
                     <button
-                      className="button button--ghost"
+                      className={button({ intent: 'ghost' })}
                       onClick={() => void onUpdateStatus(account.accountKey, 'rejected')}
                       disabled={mutating}
                     >
@@ -183,7 +187,7 @@ export default function AdminPanel() {
                     </button>
                   ) : null}
                   <button
-                    className="button button--danger"
+                    className={button({ intent: 'danger' })}
                     onClick={() => void onDeleteAccount(account.accountKey)}
                     disabled={mutating}
                   >
