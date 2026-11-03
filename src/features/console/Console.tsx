@@ -26,7 +26,6 @@ export default function Console() {
     setWebdavUsernameInput,
     webdavPasswordInput,
     setWebdavPasswordInput,
-    hasLocalCredentialsCache,
     errorMessage,
     infoMessage,
     webdavEndpoint,
@@ -109,72 +108,51 @@ export default function Console() {
         </p>
       </section>
 
-      <section className={cardStyles.base()}>
-        <div className={cardStyles.header()}>
-          <h2 className={cardStyles.title()}>WebDAV 凭据</h2>
-          <button className={button()} onClick={onSaveWebDavCredentials} disabled={isBusy || !session?.loggedIn}>
-            {savingWebDavCredentials ? '保存中...' : '保存凭据'}
-          </button>
-        </div>
-
-        {session?.loggedIn ? (
-          <>
-            <p className={cardStyles.footnote()}>
-              当前登录的夸克账户会自动绑定一组 WebDAV 用户名和密码。这里显示的是当前有效凭据，你可以直接修改并保存。
-            </p>
-            {session?.accountStatus === 'pending' ? (
-              <div className={notice({ intent: 'warning' })}>
-                当前账户处于待审核状态：凭据已生成但尚未激活，WebDAV 客户端连接会被拒绝，直到管理员审核通过。
-              </div>
-            ) : null}
-            {session?.accountStatus === 'rejected' ? (
-              <div className={notice({ intent: 'error' })}>
-                当前账户已被拒绝：WebDAV 访问已停用。如有疑问请联系管理员。
-              </div>
-            ) : null}
-            <div className="grid grid-cols-2 gap-[12px] mt-[14px] max-[720px]:grid-cols-1">
-              <label className={field({ inline: true })} htmlFor="webdav-username-input">
-                <span className="block mb-[8px]">WebDAV 用户名</span>
-                <input className={input()}
-                  id="webdav-username-input"
-                  type="text"
-                  value={webdavUsernameInput}
-                  onChange={(event) => setWebdavUsernameInput(event.target.value)}
-                  disabled={isBusy}
-                />
-              </label>
-              <label className={field({ inline: true })} htmlFor="webdav-password-input">
-                <span className="block mb-[8px]">WebDAV 密码</span>
-                <input className={input()}
-                  id="webdav-password-input"
-                  type="text"
-                  value={webdavPasswordInput}
-                  onChange={(event) => setWebdavPasswordInput(event.target.value)}
-                  disabled={isBusy}
-                />
-              </label>
+      {session?.loggedIn ? (
+        <section className={cardStyles.base()}>
+          <div className={cardStyles.header()}>
+            <h2 className={cardStyles.title()}>WebDAV 凭据</h2>
+            <button className={button()} onClick={onSaveWebDavCredentials} disabled={isBusy}>
+              {savingWebDavCredentials ? '保存中...' : '保存凭据'}
+            </button>
+          </div>
+          <p className={cardStyles.footnote()}>
+            当前登录的夸克账户会自动绑定一组 WebDAV 用户名和密码。这里显示的是当前有效凭据，你可以直接修改并保存。
+          </p>
+          {session?.accountStatus === 'pending' ? (
+            <div className={notice({ intent: 'warning' })}>
+              当前账户处于待审核状态：凭据已生成但尚未激活，WebDAV 客户端连接会被拒绝，直到管理员审核通过。
             </div>
-          </>
-        ) : hasLocalCredentialsCache ? (
-          <>
-            <p className={cardStyles.footnote()}>
-              这里显示的是当前浏览器本地缓存的上一组 WebDAV 凭据，方便你刷新页面后继续查看。真正使用前，仍需要先恢复对应的夸克登录状态。
-            </p>
-            <div className="grid grid-cols-2 gap-[12px] mt-[14px] max-[720px]:grid-cols-1">
-              <label className={field({ inline: true })} htmlFor="webdav-username-input">
-                <span className="block mb-[8px]">本地缓存的 WebDAV 用户名</span>
-                <input className={input()} id="webdav-username-input" type="text" value={webdavUsernameInput} disabled />
-              </label>
-              <label className={field({ inline: true })} htmlFor="webdav-password-input">
-                <span className="block mb-[8px]">本地缓存的 WebDAV 密码</span>
-                <input className={input()} id="webdav-password-input" type="text" value={webdavPasswordInput} disabled />
-              </label>
+          ) : null}
+          {session?.accountStatus === 'rejected' ? (
+            <div className={notice({ intent: 'error' })}>
+              当前账户已被拒绝：WebDAV 访问已停用。如有疑问请联系管理员。
             </div>
-          </>
-        ) : (
-          <p className={cardStyles.footnote()}>请先完成夸克登录。登录成功后，系统会自动为当前夸克账户生成一组 WebDAV 用户名和密码。</p>
-        )}
-      </section>
+          ) : null}
+          <div className="grid grid-cols-2 gap-[12px] mt-[14px] max-[720px]:grid-cols-1">
+            <label className={field({ inline: true })} htmlFor="webdav-username-input">
+              <span className="block mb-[8px]">WebDAV 用户名</span>
+              <input className={input()}
+                id="webdav-username-input"
+                type="text"
+                value={webdavUsernameInput}
+                onChange={(event) => setWebdavUsernameInput(event.target.value)}
+                disabled={isBusy}
+              />
+            </label>
+            <label className={field({ inline: true })} htmlFor="webdav-password-input">
+              <span className="block mb-[8px]">WebDAV 密码</span>
+              <input className={input()}
+                id="webdav-password-input"
+                type="text"
+                value={webdavPasswordInput}
+                onChange={(event) => setWebdavPasswordInput(event.target.value)}
+                disabled={isBusy}
+              />
+            </label>
+          </div>
+        </section>
+      ) : null}
 
       {!session?.loggedIn ? (
         <>
@@ -294,15 +272,17 @@ export default function Console() {
         </>
       ) : null}
 
-      <section className={cardStyles.base({ intent: 'danger' })}>
-        <div className={cardStyles.header()}>
-          <h2 className={cardStyles.title()}>会话清理</h2>
-          <button className={button({ intent: 'danger' })} onClick={onClearSession} disabled={isBusy}>
-            {clearingSession ? '清理中...' : '清理会话'}
-          </button>
-        </div>
-        <p>会清空 Worker 当前认证/会话状态，清理后需要重新登录。</p>
-      </section>
+      {session?.loggedIn ? (
+        <section className={cardStyles.base({ intent: 'danger' })}>
+          <div className={cardStyles.header()}>
+            <h2 className={cardStyles.title()}>会话清理</h2>
+            <button className={button({ intent: 'danger' })} onClick={onClearSession} disabled={isBusy}>
+              {clearingSession ? '清理中...' : '清理会话'}
+            </button>
+          </div>
+          <p>会清空 Worker 当前认证/会话状态，清理后需要重新登录。</p>
+        </section>
+      ) : null}
     </main>
   )
 }
