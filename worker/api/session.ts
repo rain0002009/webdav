@@ -2,7 +2,6 @@ import { LoginError, finalizeLogin, type LoginOutcome } from '../account'
 import { jsonError, jsonMessage, jsonOk, readJsonBody } from '../http'
 import { QuarkClient } from '../quark/client'
 import {
-  clearQuarkSessionForAccount,
   createAnonymousSessionStatus,
   getQrRequest,
   getSessionStatus,
@@ -278,11 +277,11 @@ export async function handleSessionApiRequest(request: Request, env: Env): Promi
       return jsonError(await auth.response.text(), auth.response.status)
     }
 
-    await clearQuarkSessionForAccount(auth.credentials.accountKey, env)
-
+    // Console credentials live in the browser. Acknowledge older clients without
+    // deleting the shared Quark session that WebDAV still needs.
     return jsonOk<LogoutResponse>({
       cleared: true,
-      message: 'Quark session cleared for this account.',
+      message: 'Console logout acknowledged. Clear locally stored console credentials.',
     })
   }
 

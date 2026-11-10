@@ -21,7 +21,6 @@ export default function Console() {
     pollingQr,
     savingCookie,
     savingWebDavCredentials,
-    clearingSession,
     webdavUsernameInput,
     setWebdavUsernameInput,
     webdavPasswordInput,
@@ -33,7 +32,7 @@ export default function Console() {
     onStartQrLogin,
     onPollQrStatus,
     onSaveCookie,
-    onClearSession,
+    onLogout,
     onSaveWebDavCredentials,
     isBusy,
   } = useConsoleSession()
@@ -275,12 +274,12 @@ export default function Console() {
       {session?.loggedIn ? (
         <section className={cardStyles.base({ intent: 'danger' })}>
           <div className={cardStyles.header()}>
-            <h2 className={cardStyles.title()}>会话清理</h2>
-            <button className={button({ intent: 'danger' })} onClick={onClearSession} disabled={isBusy}>
-              {clearingSession ? '清理中...' : '清理会话'}
+            <h2 className={cardStyles.title()}>退出登录</h2>
+            <button className={button({ intent: 'danger' })} onClick={onLogout} disabled={isBusy}>
+              退出登录
             </button>
           </div>
-          <p>会清空 Worker 当前认证/会话状态，清理后需要重新登录。</p>
+          <p>退出当前浏览器的控制台登录，WebDAV 服务将继续运行。</p>
         </section>
       ) : null}
     </main>

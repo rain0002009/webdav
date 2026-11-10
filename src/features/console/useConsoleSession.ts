@@ -31,7 +31,6 @@ export function useConsoleSession() {
   const [pollingQr, setPollingQr] = useState(false)
   const [savingCookie, setSavingCookie] = useState(false)
   const [savingWebDavCredentials, setSavingWebDavCredentials] = useState(false)
-  const [clearingSession, setClearingSession] = useState(false)
   const [webdavUsernameInput, setWebdavUsernameInput] = useState(initialCredentialState.username)
   const [webdavPasswordInput, setWebdavPasswordInput] = useState(initialCredentialState.password)
   const [hasLocalCredentialsCache, setHasLocalCredentialsCache] = useState(initialCredentialState.hasCache)
@@ -209,28 +208,18 @@ export function useConsoleSession() {
     }
   }, [cookieInput, loadSession])
 
-  const onClearSession = useCallback(async () => {
-    setClearingSession(true)
+  const onLogout = useCallback(() => {
+    clearLocalWebDavCredentials()
+    setHasLocalCredentialsCache(false)
+    setSession(null)
+    setWebdavUsernameInput('')
+    setWebdavPasswordInput('')
+    setQrState(null)
+    setQrStatus(null)
+    setCookieInput('')
     setErrorMessage(null)
-    setInfoMessage(null)
-    try {
-      await fetchJson<{ cleared?: boolean; message?: string }>('/api/session/logout', {
-        method: 'POST',
-        headers: getStoredAuthHeaders(),
-      })
-      setQrState(null)
-      setQrStatus(null)
-      setCookieInput('')
-      clearLocalWebDavCredentials()
-      setHasLocalCredentialsCache(false)
-      setInfoMessage('Session cleared.')
-      await loadSession()
-    } catch (error) {
-      handleAuthFailure(error, 'Failed to clear session')
-    } finally {
-      setClearingSession(false)
-    }
-  }, [handleAuthFailure, loadSession])
+    setInfoMessage('已退出控制台登录。')
+  }, [])
 
   const onSaveWebDavCredentials = useCallback(async () => {
     const username = webdavUsernameInput.trim()
@@ -273,7 +262,7 @@ export function useConsoleSession() {
   }, [handleAuthFailure, loadSession, webdavPasswordInput, webdavUsernameInput])
 
   const isBusy =
-    loadingSession || startingQr || pollingQr || savingCookie || savingWebDavCredentials || clearingSession
+    loadingSession || startingQr || pollingQr || savingCookie || savingWebDavCredentials
 
   return {
     session,
@@ -286,7 +275,6 @@ export function useConsoleSession() {
     pollingQr,
     savingCookie,
     savingWebDavCredentials,
-    clearingSession,
     webdavUsernameInput,
     setWebdavUsernameInput,
     webdavPasswordInput,
@@ -299,7 +287,7 @@ export function useConsoleSession() {
     onStartQrLogin,
     onPollQrStatus,
     onSaveCookie,
-    onClearSession,
+    onLogout,
     onSaveWebDavCredentials,
     isBusy,
   }

@@ -22,7 +22,7 @@
 - `endpoint` 逻辑统一由 `createDavEndpoint(origin)` 一侧推导，避免前后端各自拼接不同 `/dav` 地址。
 - `cookie`、`accountKey`、`webdavCredentials` 三者存在绑定关系；调整任一字段时必须检查其余两个是否仍一致。
 - `mergeUpstreamCookies()` 只合并白名单 cookie key；不要随意放宽，否则可能污染当前会话。
-- `clearSession()` 不只是退出标记，还会清空 WebDAV 凭据和二维码请求状态。
+- 控制台退出登录仅清除浏览器本地凭据和页面状态；`/api/session/logout` 为旧客户端保留兼容响应，保留 KV 中的夸克会话供 WebDAV 使用。
 
 ## API 约定
 
